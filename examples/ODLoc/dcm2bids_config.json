@@ -1,0 +1,91 @@
+{
+  "descriptions": [
+    {
+      "id": "mp2rage_inv1_nd",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-1_rec-ND",
+      "criteria": {
+        "SeriesDescription": "*INV1_ND"
+      }
+    },
+    {
+      "id": "mp2rage_inv1_dis2d",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-1_rec-DIS2D",
+      "criteria": {
+        "SeriesDescription": "*INV1",
+        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+      }
+    },
+    {
+      "id": "mp2rage_inv2_nd",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-2_rec-ND",
+      "criteria": {
+        "SeriesDescription": "*INV2_ND"
+      }
+    },
+    {
+      "id": "mp2rage_inv2_dis2d",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-2_rec-DIS2D",
+      "criteria": {
+        "SeriesDescription": "*INV2",
+        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+      }
+    },
+    {
+      "id": "mp2rage_div",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "rec-DIV",
+      "criteria": {
+        "SeriesDescription": "*DIV_Images"
+      }
+    },
+    {
+      "id": "mp2rage_t1map",
+      "datatype": "anat",
+      "suffix": "T1map",
+      "criteria": {
+        "SeriesDescription": "*T1_Images"
+      }
+    },
+    {
+      "id": "mp2rage_uni",
+      "datatype": "anat",
+      "suffix": "UNIT1",
+      "criteria": {
+        "SeriesDescription": "*UNI_Images"
+      }
+    },
+    {
+      "id": "fmap_reverse",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-AP",
+      "criteria": {
+        "SeriesDescription": {
+          "any": ["REVERSE", "reverse", "*_reverse"]
+        }
+      },
+      "intended_for": ["bold_odloc"]
+    },
+    {
+      "id": "bold_odloc",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-ODloc",
+      "criteria": {
+        "SeriesDescription": {
+          "any": ["ODloc*", "mb_*", "run"]
+        },
+        "PhaseEncodingDirection": "j-"
+      }
+    }
+  ]
+}

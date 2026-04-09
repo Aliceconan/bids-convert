@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check shell syntax
+        run: |
+          bash -n scripts/scout.sh
+          bash -n scripts/convert_parallel.sh
+          bash -n scripts/copy_auxiliary.sh
+
+      - name: Check Python syntax
+        run: |
+          PYTHONPYCACHEPREFIX=/tmp/codex-pyc python -m py_compile \
+            scripts/validate.py \
+            scripts/cleanup_aborted.py \
+            scripts/generate_events_template.py
+
+      - name: Run smoke tests
+        run: python -m unittest tests/test_validate_and_cleanup.py

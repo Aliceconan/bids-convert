@@ -1,0 +1,7 @@
+interface:
+  display_name: "BIDS Convert"
+  short_description: "Agent workflow for MRI DICOM to BIDS"
+  default_prompt: "Use $bids-convert to scout MRI rawdata, build dcm2bids configs, run conversion, validate outputs, and extend the workflow to new vendors or sequence types when needed."
+
+policy:
+  allow_implicit_invocation: true

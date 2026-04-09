@@ -1,0 +1,100 @@
+# ============================================================
+# fMRI rawdata -> BIDS  project config  (v1.4)
+# ============================================================
+# 基于 ODLoc / EYEDEP_CRF / MP_CRF / MonoDep 四个已完成项目提炼。
+# 每个新项目复制一份到 <project>/code/project_config.yaml。
+
+config_version: "1.4"
+
+# ------ 项目基本信息 ------
+project_name: ""
+raw_data_root: ""
+bids_output: ""
+
+# ------ Session 结构 ------
+sessions:
+  enabled: false
+  labels: []                    # 例: [ses-pre, ses-post]
+
+# ------ 被试 ------
+subjects:
+  # 项目事实
+  total_expected: 0
+  excluded:
+    - id: ""
+      reason: ""
+  # 处理策略
+  numbering: "by_date"          # "by_date" | "by_original_id"
+  # 详细 mapping 见 participants_mapping.tsv
+
+# ------ 结构像 ------
+anat:
+  - sequence_type: "MP2RAGE"
+    # 注意：列出所有大小写变体（fnmatch 区分大小写）；侦察时包含最早日期被试
+    series_description_variants: ["*INV1*", "*INV2*", "*UNI*", "*T1*", "*DIV*"]
+    duplicate_handling: "ask"   # "keep_last" / "keep_first" / "keep_all" / "ask"
+    outputs:
+      - id: "inv1_mag_nd"
+        suffix: "MP2RAGE"
+        entities: {inv: 1, part: mag, rec: ND}
+        criteria_hint: "*INV1_ND"
+      - id: "uni"
+        suffix: "UNIT1"
+        entities: {}
+        criteria_hint: "*UNI_Images"
+      # ... 按项目实际输出列出
+
+# ------ 功能像 ------
+func:
+  - sequence_type: "bold"
+    task_name: ""
+    runs_per_session: 0
+    expected_volumes: 0
+    series_description_variants: []
+    discrimination_hint: ""       # 可选, 当 variants 不足以区分时说明辅助判据
+                                  # 例: "ImageType contains MAGNITUDE"
+
+  # phase 作为独立条目:
+  # - sequence_type: "bold_phase"
+  #   task_name: ""
+  #   runs_per_session: 0
+  #   expected_volumes: 0
+  #   series_description_variants: ["mbep2d*_AP"]
+  #   discrimination_hint: "ImageType contains PHASE"
+
+# ------ Fieldmap ------
+fmap:
+  - sequence_type: "reverse_pe_epi"
+    pe_direction: ""            # 例: "j"
+    per_run: true
+    series_description_variants: []
+    discrimination_hint: ""       # 可选, 同 func
+
+# ------ 辅助数据 ------
+auxiliary:
+  physio:
+    enabled: false
+    location: "none"            # "top_level_folder" / "dicom_subfolder" / "none"
+  behavior:
+    enabled: false
+    location: "none"
+
+# ------ 刺激范式 ------
+events:
+  enabled: false
+  generator_script: ""          # 例: code/generate_events.py
+  notes: ""                     # 简述范式要点或指向范式文档
+
+# ------ 需要人工确认的事项 ------
+manual_review:
+  - item: ""                    # 简述问题
+    reason: ""                  # 为什么需要人工确认
+    decision: ""                # 最终决定
+    affected: ""                # 受影响的被试/session
+
+# ------ 特殊规则 ------
+special_cases:
+  - type: ""                    # 例: "calibration_scan" / "noise_scan" / "aborted_run"
+    description: ""
+    handling: ""
+    affected: ""

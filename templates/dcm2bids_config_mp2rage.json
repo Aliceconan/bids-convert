@@ -1,0 +1,108 @@
+{
+  "_comment": "MP2RAGE 通用 config 片段 — 复制需要的条目到项目 config 中",
+  "_comment2": "并非所有项目都有全部输出，按实际侦察结果选择",
+  "descriptions": [
+    {
+      "id": "mp2rage_inv1_nd",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-1_rec-ND",
+      "criteria": {
+        "SeriesDescription": "*INV1_ND"
+      }
+    },
+    {
+      "id": "mp2rage_inv1_dis2d",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-1_rec-DIS2D",
+      "criteria": {
+        "SeriesDescription": "*INV1",
+        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+      }
+    },
+    {
+      "id": "mp2rage_inv2_nd",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-2_rec-ND",
+      "criteria": {
+        "SeriesDescription": "*INV2_ND"
+      }
+    },
+    {
+      "id": "mp2rage_inv2_dis2d",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-2_rec-DIS2D",
+      "criteria": {
+        "SeriesDescription": "*INV2",
+        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+      }
+    },
+    {
+      "id": "mp2rage_uni",
+      "datatype": "anat",
+      "suffix": "UNIT1",
+      "criteria": {
+        "SeriesDescription": "*UNI_Images"
+      }
+    },
+    {
+      "id": "mp2rage_t1map",
+      "datatype": "anat",
+      "suffix": "T1map",
+      "criteria": {
+        "SeriesDescription": "*T1_Images"
+      }
+    },
+    {
+      "id": "mp2rage_div",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "rec-DIV",
+      "criteria": {
+        "SeriesDescription": "*DIV_Images"
+      }
+    },
+    {
+      "_comment": "以下为 Phase 数据，仅部分项目/被试有",
+      "id": "mp2rage_inv1_phs_nd",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-1_part-phase_rec-ND",
+      "criteria": {
+        "SeriesDescription": "*INV1_PHS_FILT_ND"
+      }
+    },
+    {
+      "id": "mp2rage_inv1_phs_dis2d",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-1_part-phase_rec-DIS2D",
+      "criteria": {
+        "SeriesDescription": "*INV1_PHS_FILT",
+        "ImageType": ["ORIGINAL", "PRIMARY", "P", "DIS2D", "PHASE"]
+      }
+    },
+    {
+      "id": "mp2rage_inv2_phs_nd",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-2_part-phase_rec-ND",
+      "criteria": {
+        "SeriesDescription": "*INV2_PHS_FILT_ND"
+      }
+    },
+    {
+      "id": "mp2rage_inv2_phs_dis2d",
+      "datatype": "anat",
+      "suffix": "MP2RAGE",
+      "custom_entities": "inv-2_part-phase_rec-DIS2D",
+      "criteria": {
+        "SeriesDescription": "*INV2_PHS_FILT",
+        "ImageType": ["ORIGINAL", "PRIMARY", "P", "DIS2D", "PHASE"]
+      }
+    }
+  ]
+}
