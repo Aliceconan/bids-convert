@@ -420,7 +420,7 @@ block 间注视点期 → trial_type 命名为 `baseline`，不要叫 `fixation`
 
 ```
 bids-convert/
-  README.md                              ← 本文件（skill 入口）
+  README.md                              ← GitHub 展示页面 + 快速上手
   scripts/
     scout.sh                             ← 侦察：跑 helper + 收集变体
     convert_parallel.sh                  ← 并行转换（含安全重跑逻辑）

@@ -1,3 +1,13 @@
+# This file is an illustrative example of how to register bids-convert
+# as a named skill in an agent platform.
+#
+# It does NOT follow any official OpenAI or Codex schema spec.
+# Adapt the field names and structure to match whichever platform
+# (Codex, LangChain tool registry, CrewAI, custom agent config, etc.)
+# you are integrating with.
+#
+# The canonical skill entrypoint is SKILL.md, not this file.
+
 interface:
   display_name: "BIDS Convert"
   short_description: "Agent workflow for MRI DICOM to BIDS"
