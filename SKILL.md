@@ -102,6 +102,7 @@ bids-convert/
 [8] 辅助数据   → physio / behavior → sourcedata
 [9] Events     → 根据范式文档生成 events.tsv（仅 task fMRI）
 [10] 记录      → 填写 decision_log.md
+[11] BIDS 合规验证 → bids-validator 官方验证，上传 OpenNeuro 前必跑
 ```
 
 ## 各步骤详细规范
@@ -334,6 +335,27 @@ block 间注视点期 → trial_type 命名为 `baseline`，不要叫 `fixation`
 # 4. 刺激范式
 # 5. 迁移经验
 ```
+
+### [11] BIDS 合规验证
+
+所有后处理和 events 生成完成后，跑官方 validator 确认符合 BIDS spec。这是上传 OpenNeuro 前的最后一道门。
+
+```bash
+# 方式一：npm 全局安装（推荐，离线可用）
+npm install -g bids-validator
+bids-validator "$PROJECT_DIR/bids"
+
+# 方式二：Docker（无需 npm）
+docker run --rm -v "$PROJECT_DIR/bids":/data:ro \
+  bids/validator:latest /data
+
+# 方式三：网页版（小数据集快速验证）
+# https://bids-standard.github.io/bids-validator/
+```
+
+**ERROR 必须修复；WARNING 酌情处理（OpenNeuro 允许带 warning 上传，但建议尽量清除）。**
+
+常见报错及解法见 `references/pitfalls.md` #13–#18。
 
 ## 操作规则
 

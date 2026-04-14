@@ -16,6 +16,12 @@
 | 10 | 隐私信息泄露 | 1/4 | `participants_mapping.tsv` 和 `participants.tsv` 不含原始 ID/姓名/年龄 |
 | 11 | `--force_dcm2bids` 重跑太慢 | 1/4 | 仅修改匹配规则时不需要重跑 dcm2niix，去掉此 flag |
 | 12 | Dummy TRs 被忽略 | 1/4 | 比较 `n_TRs × TR` 与刺激总时长，差值 = dummy + baseline |
+| 13 | `IntendedFor` 路径写错 | 常见 | fmap JSON 里的 `IntendedFor` 必须是相对于 subject 目录的路径（如 `ses-pre/func/sub-01_ses-pre_task-rest_bold.nii.gz`），不是绝对路径 |
+| 14 | func sidecar 缺 `TaskName` | 常见 | dcm2bids 通常自动填；如果手动写了 sidecar，必须加 `"TaskName": "rest"`（与文件名 `task-xxx` 一致） |
+| 15 | `dataset_description.json` 缺失或字段不全 | 常见 | 必须有 `Name`、`BIDSVersion`；推荐加 `Authors`、`License` |
+| 16 | `participants.tsv` 列名不合规 | 偶见 | 只允许 `participant_id` + BIDS 定义的列（`age`、`sex`、`handedness`）；自定义列不会报错但会被忽略 |
+| 17 | `.bidsignore` 缺失导致额外文件报错 | 偶见 | BIDS 目录内所有不符合命名规范的文件都会报 ERROR；把 `code/`、`sourcedata/` 以外的杂项加进 `.bidsignore` |
+| 18 | events.tsv 缺 `onset` 或 `duration` 列 | 偶见 | 这两列是必填；列名必须全小写；时间单位为秒 |
 
 ## 详细说明
 
