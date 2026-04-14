@@ -5,37 +5,12 @@ description: Convert raw MRI DICOM datasets into BIDS using dcm2bids. Use this s
 
 # BIDS Convert
 
-这个 skill 用于 MRI 原始数据到 BIDS 的转换工作，尤其适合需要先侦察序列命名、再生成 `dcm2bids` 配置、最后做批量转换和验证的场景。
+**SKILL_DIR（执行所有脚本时使用此路径）：**
+```
+SKILL_DIR=${CLAUDE_SKILL_DIR}
+```
 
-## 适用范围
-
-这个 skill 适合以下任务：
-
-- 把 MRI 原始 DICOM 数据整理成 BIDS
-- 先侦察不同被试和日期的 `SeriesDescription`，再生成 `dcm2bids` 配置
-- 并行批量转换、检查 volume 和文件数、清理 aborted run
-- 为 task fMRI 补充 `events.tsv`
-
-当前经验最强的是 Siemens + MP2RAGE + EPI BOLD + reverse-PE fieldmap 这一路，但不要把它理解成硬限制。
-
-如果后续扩展到 Philips、GE、DWI、ASL 或其他序列类型，应优先复用现有流程骨架，只替换或扩展以下部分：
-
-- 侦察时读取的关键 sidecar 字段
-- config 生成规则
-- 序列判别提示与模板
-- 验证规则与后处理策略
-
-不要把当前未覆盖的机型或序列写成"永不支持"或"不可用"；更合适的表达是"当前优先覆盖 Siemens，其他厂商待迭代补充"。
-
-## 执行原则
-
-执行时优先遵守这些原则：
-
-- 侦察必须覆盖最早期和后期被试，不能只看一个样本。
-- `SeriesDescription` 在 `dcm2bids` 里按大小写敏感匹配，配置时要显式列出变体。
-- 修改 config 后重跑单个 session 时，先清理该 session 的旧 BIDS 输出，再重跑。
-- 被试编号、排除策略、重复结构像保留规则、events 设计来源，这几件事必须问用户，不要擅自假设。
-- 能用仓库内脚本时，优先直接调用脚本，不要重复手写同类逻辑。
+这个 skill 用于 MRI 原始数据到 BIDS 的转换工作。当前经验最强的是 Siemens + MP2RAGE + EPI BOLD + reverse-PE fieldmap 这一路。
 
 ## 工具依赖
 
@@ -43,6 +18,7 @@ description: Convert raw MRI DICOM datasets into BIDS using dcm2bids. Use this s
 |------|------|------|
 | `dcm2bids` | >= 3.2.0 | DICOM→BIDS 转换（内含 dcm2niix） |
 | `dcm2niix` | >= v1.0.20211006 | DICOM→NIfTI（由 dcm2bids 调用） |
+| `bids-validator` | >= 1.14.0 | BIDS 合规验证（步骤 [11]）；通过 `npx bids-validator` 调用，无需全局安装 |
 | `python3` | >= 3.8 | 后处理脚本 |
 | `bash` / `zsh` | — | 并行执行 |
 
@@ -50,11 +26,7 @@ description: Convert raw MRI DICOM datasets into BIDS using dcm2bids. Use this s
 
 ```
 bids-convert/
-  SKILL.md                               ← skill 入口（本文件）
-  README.md                              ← GitHub 展示页面 + 快速上手
-  README_EN.md                           ← 英文版说明
-  agents/
-    openai.yaml                          ← 平台集成示例（非官方 spec）
+  SKILL.md
   scripts/
     scout.sh                             ← 侦察：跑 helper + 收集变体
     convert_parallel.sh                  ← 并行转换（含安全重跑逻辑）
@@ -62,29 +34,19 @@ bids-convert/
     cleanup_aborted.py                   ← 检测 aborted run + 删除 + 重编号
     generate_events_template.py          ← events 生成框架（项目特定参数外部传入）
     copy_auxiliary.sh                    ← physio/behavior 复制到 sourcedata
-    create_synthetic_bids_demo.py        ← 生成 smoke demo 数据
   templates/
     project_config.yaml                  ← 项目配置模板 (v1.4)
     dcm2bids_config_mp2rage.json         ← MP2RAGE 通用 config 片段（按需选取）
     decision_log.md                      ← 决策记录模板
   references/
     schema_notes.md                      ← project_config.yaml 字段说明
-    pitfalls.md                          ← 已知陷阱与解法（12 条）
+    pitfalls.md                          ← 已知陷阱与解法（23 条）
     mp2rage_cheatsheet.md                ← MP2RAGE 11 种输出速查
     project_diffs.md                     ← 4 项目差异对照表
-    extension_roadmap.md                 ← 扩展路线说明
-    agent_integration.md                 ← agent 框架适配与接口契约
   examples/
     ODLoc/                               ← 最简单：单 session、单 task
-      dcm2bids_config.json
-      participants_mapping.tsv
     MonoDep/                             ← 最复杂：多变体、多 task、events
-      dcm2bids_config.json
-      participants_mapping.tsv
-      generate_events.py
     smoke-demo/                          ← 合成数据验证示例
-  tests/
-    test_validate_and_cleanup.py
 ```
 
 ## 工作流总览
@@ -110,9 +72,6 @@ bids-convert/
 ### [1] 初始化
 
 ```bash
-SKILL_DIR="<path-to-this-skill-folder>"
-PROJECT_DIR="<project-root>"
-
 mkdir -p "$PROJECT_DIR/code" "$PROJECT_DIR/bids"
 cp "$SKILL_DIR/templates/project_config.yaml" "$PROJECT_DIR/code/project_config.yaml"
 cp "$SKILL_DIR/templates/decision_log.md" "$PROJECT_DIR/code/decision_log.md"
@@ -120,9 +79,7 @@ cp "$SKILL_DIR/templates/decision_log.md" "$PROJECT_DIR/code/decision_log.md"
 
 ### [2] 侦察
 
-**关键原则：选被试必须覆盖不同时期（尤其是最早期），至少 2-3 个不同日期。**
-
-4 个项目全部遇到了 SeriesDescription 跨被试不一致的问题。最早期被试命名与后期完全不同是常态。
+**关键原则：选被试必须覆盖不同时期（尤其是最早期），至少 2-3 个不同日期。** 最早期被试命名与后期完全不同是常态（4/4 项目）。
 
 ```bash
 # 列出所有 session 按日期排序，选最早、中间、最晚各一个
@@ -132,26 +89,26 @@ ls -d "$PROJECT_DIR"/YYYYMMDD_* | sort
 bash "$SKILL_DIR/scripts/scout.sh" <session_folder> /tmp/scout_<name>
 ```
 
-**侦察阶段的输出：** 一张 SeriesDescription 变体清单，按大小写不敏感分组。
+侦察输出：一张 SeriesDescription 变体清单，按大小写不敏感分组。
 
 **侦察结果异常时：**
 - 未找到 sidecar JSON → 检查 DICOM 目录路径，确认 `dcm2bids_helper` 是否正常运行
 - 跨 session 序列名差异很大 → 扩大侦察范围，覆盖更多时期；在 [3] 向用户展示所有变体后再确认
-- 某序列只在少数 session 出现 → 确认是否为可选扫描，config 中按需匹配，不要强制要求所有 session 都有
+- 某序列只在少数 session 出现 → 确认是否为可选扫描，config 中按需匹配
 
 ### [3] 交互确认
 
 必须主动向用户确认以下事项（不要默认假设）：
 
-| 事项 | 为什么问 | 默认值 |
-|------|---------|--------|
-| 被试编号方式 | 有原始编号 vs 按日期排序 | 有原始编号则用原始，否则按日期 |
-| 被试排除 | 数据质量/被试退出 | 无排除 |
-| 重复结构像保留策略 | 同 session 扫两次 MP2RAGE | 无默认，必须问 |
-| 刺激范式文档 | 生成 events.tsv 所需 | 主动索要 |
-| 序列名变体确认 | 侦察结果是否覆盖全部被试 | 展示给用户确认 |
+| 事项 | 默认值 |
+|------|--------|
+| 被试编号方式 | 有原始编号则用原始，否则按日期 |
+| 被试排除 | 无排除 |
+| 重复结构像保留策略 | 无默认，**必须问** |
+| 刺激范式文档 | 主动索要（生成 events.tsv 所需） |
+| 序列名变体确认 | 展示给用户确认 |
 
-如果信息不够，只询问会阻塞下一步的最小问题集。
+只询问会阻塞下一步的最小问题集。
 
 ### [4] 生成配置
 
@@ -189,7 +146,6 @@ MP2RAGE 配置可从 `templates/dcm2bids_config_mp2rage.json` 选取需要的条
 participant_id	session	dicom_folder
 sub-01	ses-pre	20210301_S18_TASK_S01_PRE
 sub-01	ses-post	20210401_S18_TASK_S01_POST
-...
 ```
 
 不包含任何隐私信息（姓名、年龄、original_id 等）。
@@ -201,18 +157,7 @@ sub-01	ses-post	20210401_S18_TASK_S01_POST
 ```bash
 # 全量首次转换
 bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR"
-```
 
-#### 重跑策略
-
-修改 config 后需要重跑部分 session 时，**必须先清理该 session 的 BIDS 输出**。
-
-原因：`dcm2bids` 重跑时不会清理上一次的输出。如果新 config 不再匹配某些文件，旧文件会残留在 BIDS 目录中，导致：
-- 已失效的旧匹配文件残留
-- run 编号跳跃或冲突
-- 新旧文件混合
-
-```bash
 # 选择性重跑（自动清理旧输出 + 复用 tmp 中的 NIfTI）
 bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR" \
   --rerun sub-01 ses-pre sub-03 ses-pre
@@ -220,6 +165,8 @@ bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR" \
 # 如果 dcm2niix 版本更新，需要从 DICOM 完全重新转换
 bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR" --force
 ```
+
+修改 config 后重跑时**必须先清理该 session 的 BIDS 输出**，否则旧文件残留。详见 pitfalls #8。
 
 **转换失败时：**
 - 单个 session 失败 → 检查 `$PROJECT_DIR/code/logs/dcm2bids_<sub>_<ses>.log`
@@ -246,10 +193,10 @@ python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --check-tmp
 ```
 
 **验证异常的处理路径：**
-- 文件数低于期望 → 跑 `--check-tmp` 确认 tmp 中是否有未匹配 NIfTI → 更新 config 补充匹配规则 → 重跑受影响 session
-- 文件数高于期望 → 通常是重复结构像（见 7b）或 config 多匹配了序列 → 检查 tmp 日志确认原因后再处理
-- volume 数异常低 → aborted run（见 7a）→ 用 `cleanup_aborted.py` 处理
-- volume 数异常高 → config 可能把多个序列匹配成了一个条目 → 检查 tmp 中是否存在多个同名序列文件
+- 文件数低于期望 → 跑 `--check-tmp` 确认 tmp 中是否有未匹配 NIfTI → 更新 config → 重跑受影响 session
+- 文件数高于期望 → 通常是重复结构像（见 7b）或 config 多匹配了序列
+- volume 数异常低 → aborted run（见 7a）
+- volume 数异常高 → config 可能把多个序列匹配成了一个条目
 
 ### [7] 后处理
 
@@ -297,13 +244,11 @@ bash "$SKILL_DIR/scripts/copy_auxiliary.sh" "$PROJECT_DIR" --type beh
 
 ### [9] Events.tsv 生成
 
-**判断是否需要执行本步骤：**
-
 满足以下任一条件则需要生成 events.tsv：
-- 侦察结果中有含 `task-` 语义的序列（如 `EYEDEP_MAIN`、`LOC`、`task_bold` 等）
+- 侦察结果中有含 `task-` 语义的序列
 - 用户明确提到有任务态 fMRI 需要建模
 
-不确定时，询问用户："项目中是否有需要 events.tsv 的 task fMRI？"Resting state 不需要。
+Resting state 不需要。不确定时询问用户。
 
 ```bash
 # 1. 复制模板到项目
@@ -325,48 +270,26 @@ block 间注视点期 → trial_type 命名为 `baseline`，不要叫 `fixation`
 
 ### [10] 记录
 
-填写 `<project>/code/decision_log.md`，记录所有人工判断的"为什么"。
-
-```bash
-# 初始化时已复制模板，按模板中的 5 个段落逐项填写：
-# 1. 被试与 Session
-# 2. 序列识别
-# 3. 异常数据处理
-# 4. 刺激范式
-# 5. 迁移经验
-```
+填写 `<project>/code/decision_log.md`，记录所有人工判断的"为什么"。模板分 5 段：被试与 Session、序列识别、异常数据处理、刺激范式、迁移经验。
 
 ### [11] BIDS 合规验证
 
 所有后处理和 events 生成完成后，跑官方 validator 确认符合 BIDS spec。这是上传 OpenNeuro 前的最后一道门。
 
 ```bash
-# 方式一：npm 全局安装（推荐，离线可用）
+# 推荐：npx（无需全局安装）
+npx bids-validator "$PROJECT_DIR/bids" --ignoreNiftiHeaders
+
+# 离线备选：全局安装后调用
 npm install -g bids-validator
-bids-validator "$PROJECT_DIR/bids"
-
-# 方式二：Docker（无需 npm）
-docker run --rm -v "$PROJECT_DIR/bids":/data:ro \
-  bids/validator:latest /data
-
-# 方式三：网页版（小数据集快速验证）
-# https://bids-standard.github.io/bids-validator/
+bids-validator "$PROJECT_DIR/bids" --ignoreNiftiHeaders
 ```
+
+**调用注意**：`bids-validator` 通常不在 `$PATH`，直接调用会报 `command not found`，优先用 `npx`。
 
 **ERROR 必须修复；WARNING 酌情处理（OpenNeuro 允许带 warning 上传，但建议尽量清除）。**
 
-常见报错及解法见 `references/pitfalls.md` #13–#18。
-
-## 操作规则
-
-- 侦察至少覆盖 2 到 3 个不同日期的 session，且必须包含最早日期。
-- `dcm2bids` 使用 `fnmatch`，因此 `SeriesDescription` 匹配按大小写敏感处理。
-- config 中优先使用 `criteria.SeriesDescription.any` 明确列出观察到的变体。
-- 单靠 `SeriesDescription` 不够区分时，补充 `PhaseEncodingDirection`、`ImageType` 等辅助判据。
-- 默认使用并行转换。
-- 修改 config 后重跑某个 session，先清理该 session 的旧 BIDS 输出；除非用户要求彻底重转，否则复用 tmp 中已有 NIfTI。
-- `participants_mapping.tsv` 不要写入隐私信息。
-- task fMRI 的 block 间注视点期优先命名为 `baseline`，除非项目明确要求其他命名。
+常见报错及解法见 `references/pitfalls.md` #13–#23。
 
 ## 预期产物
 
@@ -374,7 +297,7 @@ docker run --rm -v "$PROJECT_DIR/bids":/data:ro \
 
 - `<project>/code/dcm2bids_config.json`
 - `<project>/code/participants_mapping.tsv`
-- `<project>/bids/...`
+- `<project>/bids/...`（含 `dataset_description.json`、`README`）
 - `<project>/code/decision_log.md`
 
 可选产物：
@@ -395,5 +318,4 @@ docker run --rm -v "$PROJECT_DIR/bids":/data:ro \
 - [`references/schema_notes.md`](references/schema_notes.md) — 编辑 `project_config.yaml` 字段时
 - [`references/mp2rage_cheatsheet.md`](references/mp2rage_cheatsheet.md) — 处理 MP2RAGE 输出时
 - [`references/project_diffs.md`](references/project_diffs.md) — 从已完成项目中选择参考模式时
-- [`references/agent_integration.md`](references/agent_integration.md) — 适配新 agent 框架或扩展到新厂商时
 - `examples/` 下的文件 — 需要具体 config 或 mapping 示例时

@@ -22,6 +22,11 @@
 | 16 | `participants.tsv` 列名不合规 | 偶见 | 只允许 `participant_id` + BIDS 定义的列（`age`、`sex`、`handedness`）；自定义列不会报错但会被忽略 |
 | 17 | `.bidsignore` 缺失导致额外文件报错 | 偶见 | BIDS 目录内所有不符合命名规范的文件都会报 ERROR；把 `code/`、`sourcedata/` 以外的杂项加进 `.bidsignore` |
 | 18 | events.tsv 缺 `onset` 或 `duration` 列 | 偶见 | 这两列是必填；列名必须全小写；时间单位为秒 |
+| 19 | `bids-validator` 命令找不到（`command not found`） | 常见 | 全局安装不在 `$PATH` 是常态；始终用 `npx bids-validator` 调用，不要直接调用裸命令 |
+| 20 | dcm2bids 输出的 `rec-DIV_MP2RAGE` 被报 `NOT_INCLUDED` ERROR | MP2RAGE 项目 | BIDS validator 不识别无 `inv-`/`part-` 的 `_MP2RAGE` suffix 变体；把 `**/*_rec-DIV_MP2RAGE.nii.gz` 和 `**/*_rec-DIV_MP2RAGE.json` 写入根目录 `.bidsignore` |
+| 21 | events.tsv 自定义列（如 `contrast`、`condition`）报 `CUSTOM_COLUMN_WITHOUT_DESCRIPTION` | task fMRI | 在根目录建 `task-<taskname>_events.json`，为每个自定义列写 `LongName` 和 `Description`（以及 `Levels` 如果是类别变量） |
+| 22 | `INCONSISTENT_SUBJECTS`：部分被试缺某些 anat 文件 | 常见 | 如果是真实缺数据（扫描时未采集），此 warning 无法消除；记录在 decision_log 中，OpenNeuro 允许带此 warning 上传 |
+| 23 | `TOO_FEW_AUTHORS`：只有一位作者触发提示 | 偶见 | 仅为提醒是否漏填；确认无误后可忽略 |
 
 ## 详细说明
 
