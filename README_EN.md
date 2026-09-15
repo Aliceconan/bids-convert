@@ -23,6 +23,7 @@ You do not need Codex to use this repository. The core workflow is driven by sta
 - validating file counts, functional run volumes, and unmatched tmp outputs
 - cleaning aborted runs
 - copying physio or behavior files into `sourcedata`
+- converting Siemens CMRR physiological logs into BIDS `_physio.tsv.gz` (both File-mode `.log` files and DICOM-mode `PhysioLog` series, which `dcm2niix` silently skips)
 - scaffolding `events.tsv` generation for task fMRI
 
 ## Expansion Areas

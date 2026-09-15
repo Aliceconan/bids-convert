@@ -28,6 +28,10 @@
 | 22 | `INCONSISTENT_SUBJECTS`：部分被试缺某些 anat 文件 | 常见 | 如果是真实缺数据（扫描时未采集），此 warning 无法消除；记录在 decision_log 中，OpenNeuro 允许带此 warning 上传 |
 | 23 | `TOO_FEW_AUTHORS`：只有一位作者触发提示 | 偶见 | 仅为提醒是否漏填；确认无误后可忽略 |
 | 24 | `EVENTS_TSV_MISSING`：localizer / block-design 定位扫描无 events.tsv | localizer 项目 | 纯定位用途的 task fMRI（如 ODLoc）不需要 events.tsv；此 warning 可接受，OpenNeuro 允许带此 warning 上传 |
+| 25 | dcm2niix 完全跳过 CMRR PhysioLog DICOM | Siemens+CMRR | 对 `ImageType` 含 `RAWDATA\PHYSIO` 的 series，dcm2niix（实测 v1.0.20250505）无产物也无警告，极易被当成"没采生理数据"；用 `scripts/extract_cmrr_physio_dicom.py` 从 CSA Data `(7fe1,1010)` 提取内嵌 log |
+| 26 | CSA Data 里 log 正文不紧跟文件名 | Siemens+CMRR | 打包格式是 `UINT32 dataLen` + `UINT32 nameLen` + 文件名 + **填充到块起点 +1024** + 正文；必须从 `块起点+1024` 读，不要假设紧邻文件名 |
+| 27 | PULS 与 RESP 采样率不同（实测 200 / 50 Hz） | Siemens+CMRR | BIDS 要求单个 `_physio.tsv.gz` 内所有列共享一个 `SamplingFrequency`；用 `recording-pulse` / `recording-respiratory` 分开存，不要重采样合并 |
+| 28 | 同一项目内 Physio recording 模式不一致 | CMRR 项目 | 同一天的两个 session 可能一个走 File 模式（独立 `.log`，留在扫描仪本地易漏导）一个走 DICOM 模式（PhysioLog series 混在 DICOM 里）；在 `participants_mapping.tsv` 加 `physio_mode` 列记录，两条路径分别处理后汇到同一 BIDS 格式 |
 
 ## 详细说明
 
@@ -50,3 +54,68 @@ dcm2bids -d ... -p sub-01 -s ses-pre -c new_config.json -o bids
 ```
 
 `convert_parallel.sh --rerun` 已内置此逻辑。
+
+### #25–#28 CMRR 生理记录（Siemens）
+
+西门子 CMRR 序列的 `Physio recording` 有两种输出模式，**同一个项目里可能混用**，
+两条路径的产物完全不同：
+
+| 模式 | 产物 | 归属方式 | 风险 |
+|---|---|---|---|
+| **DICOM** | `*_PhysioLog` series 混在 DICOM 目录里，`ImageType = ORIGINAL\PRIMARY\RAWDATA\PHYSIO`，单帧 1–19 MB | `SeriesDescription` 直接是 `<task>_run_01_PhysioLog`，**无歧义** | dcm2niix 静默跳过，容易被误判为"没采" |
+| **File** | 独立的 `Physio_<date>_<time>_<uuid>_{Info,PULS,RESP}.log` | 只能靠 `Info.log` 里的 `NumVolumes` 反查对应哪个 run | 文件留在扫描仪本地 log 目录，**漏导就没了**，且会被定期清理 |
+
+两种模式的 log 内容格式完全相同（`LogVersion = EJA_1`），所以提取出来后
+可以走同一条转换路径。**DICOM 模式更可靠**，建议在协议里统一成它。
+
+#### 处理流程
+
+```bash
+# DICOM 模式：先从 CSA Data 提取出 .log
+python3 "$SKILL_DIR/scripts/extract_cmrr_physio_dicom.py" \
+    <dicom_dir> <project>/sourcedata/physio/sub-XX
+
+# File 模式：原样复制到 sourcedata 即可
+cp <physio_dir>/*.log <project>/sourcedata/physio/sub-XX/
+
+# 两种模式都用同一个脚本转 BIDS
+python3 "$SKILL_DIR/scripts/cmrr_physio2bids.py" \
+    <project>/sourcedata/physio/sub-XX <project>/bids/sub-XX/func \
+    --prefix sub-XX_task-<task> \
+    --map 469:01,470:02,382:03 \
+    [--recursive]        # DICOM 模式提取出来按 run 分了子目录时加
+```
+
+`--map` 是 `NumVolumes:run` 映射，从各 bold 的 volume 数得到。
+加 `--recursive` 时脚本会**优先用父目录名里的 run 号**（DICOM 模式权威），
+并与 `NumVolumes` 反查结果**交叉校验**，冲突则跳过并报警。
+
+#### 关键细节
+
+**CSA Data `(7fe1,1010)` 的打包格式**（实测 `MR_VE12U` / `syngo MR E12`）：
+
+```
+块起点 +0      UINT32  dataLen     正文字节数
+块起点 +4      UINT32  nameLen     文件名字节数
+块起点 +8      char[]  filename    Physio_<date>_<time>_<uuid>_<TYPE>.log
+块起点 +1024   char[]  data        log 正文（从 UUID = ... 起）
+下一块起点 = 块起点 + 1024 + dataLen，再向上对齐到 512 字节
+```
+
+正文固定从 **+1024** 开始，不紧跟文件名。解析时不要依赖对齐规则，
+改用正则定位所有文件名偏移、反推块起点（文件名偏移 −8），
+再校验该处的 `nameLen` 与文件名等长（排除正文里的巧合匹配）。
+
+**采样率**：Siemens tick = 2.5 ms。实测 PULS 每 2 tick 一采样（200 Hz），
+RESP 每 8 tick（50 Hz）。因为 BIDS 规定单个 `_physio.tsv.gz` 内所有列
+共享一个 `SamplingFrequency`，必须用 `recording-<label>` 分开存。
+不要为了合并而重采样——会引入插值伪影，而原始保真对 RETROICOR 更重要。
+
+**StartTime**：`(physio 首个采样 tick − Info.log 里首个 volume 的 ACQ_START_TICS) × 2.5ms`。
+正常为负值（生理记录早于第一个 volume 开始）。这个值同时是该协议
+"序列启动到第一个 volume"的实测开销，在同一协议内应当高度稳定
+（HS7T 1.2mm/124 层实测 16 个 run 全为 −50.24 s）。**若各 run 差异很大，
+说明 physio 与 run 的配对出错了**，可以当作校验手段。
+
+**reverse-PE 的 physio 不转**：BIDS 的 fmap 不放 physio。这些组的
+`NumVolumes` 通常是 3，不在 `--map` 里，脚本会自动跳过并列出。

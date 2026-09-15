@@ -34,6 +34,8 @@ bids-convert/
     cleanup_aborted.py                   ← 检测 aborted run + 删除 + 重编号
     generate_events_template.py          ← events 生成框架（项目特定参数外部传入）
     copy_auxiliary.sh                    ← physio/behavior 复制到 sourcedata
+    extract_cmrr_physio_dicom.py         ← 从 PhysioLog DICOM 的 CSA Data 提取内嵌 log
+    cmrr_physio2bids.py                  ← CMRR log → BIDS _physio.tsv.gz + .json
   templates/
     project_config.yaml                  ← 项目配置模板 (v1.4)
     dcm2bids_config_mp2rage.json         ← MP2RAGE 通用 config 片段（按需选取）
@@ -241,6 +243,48 @@ bash "$SKILL_DIR/scripts/copy_auxiliary.sh" "$PROJECT_DIR" --type beh
 ```
 
 **注意**：physio 可能在 DICOM 文件夹内的子目录，也可能在顶层同名目录。命名大小写不可预测，必须 `ls` 确认。
+
+#### Siemens CMRR 生理记录
+
+CMRR 序列的 `Physio recording` 有 **File** 和 **DICOM** 两种输出模式，
+**同一项目内可能混用**，必须分别识别。先判断每个 session 属于哪种：
+
+```bash
+# 有独立 .log 文件 → File 模式
+ls <session>_physio/*.log 2>/dev/null
+
+# DICOM 目录里有 *_PhysioLog series（ImageType 含 RAWDATA\PHYSIO）→ DICOM 模式
+# 特征：单帧、1–19 MB、每个 series 只有 1 个文件
+```
+
+⚠️ **dcm2niix 对 DICOM 模式的 PhysioLog 无产物也无警告**（见 pitfalls #25）。
+只看 dcm2niix 输出会误判成"这个 session 没采生理数据"。
+
+```bash
+# DICOM 模式：先提取出 .log（按 SeriesDescription 分子目录）
+python3 "$SKILL_DIR/scripts/extract_cmrr_physio_dicom.py" \
+    <dicom_dir> "$PROJECT_DIR/sourcedata/physio/sub-XX"
+
+# File 模式：原样复制
+cp <physio_dir>/*.log "$PROJECT_DIR/sourcedata/physio/sub-XX/"
+
+# 两种模式共用同一个转换脚本
+python3 "$SKILL_DIR/scripts/cmrr_physio2bids.py" \
+    "$PROJECT_DIR/sourcedata/physio/sub-XX" "$PROJECT_DIR/bids/sub-XX/func" \
+    --prefix sub-XX_task-<task> \
+    --map 469:01,470:02,382:03 \
+    [--recursive]        # DICOM 模式提取出来分了子目录时加
+```
+
+`--map` 是 `NumVolumes:run` 映射（从各 bold 的 volume 数得到）。产物是
+`_recording-pulse_physio` 和 `_recording-respiratory_physio` 两套
+——PULS/RESP 采样率不同，BIDS 不允许放进同一个 tsv（pitfalls #27）。
+
+**在 `participants_mapping.tsv` 里加一列 `physio_mode`**（`file` / `dicom` / `none`）
+记录每个 session 走的哪条路径，否则后续无从追溯。
+
+**校验**：同一协议下所有 run 的 `StartTime` 应当高度一致；若差异很大，
+说明 physio 与 run 配对错了。详见 `references/pitfalls.md` #25–#28。
 
 ### [9] Events.tsv 生成
 
