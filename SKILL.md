@@ -31,7 +31,9 @@ bids-convert/
     scout.sh                             ← 侦察：跑 helper + 收集变体
     convert_parallel.sh                  ← 并行转换（含安全重跑逻辑）
     validate.py                          ← 文件数 + volume 检查 + tmp 未匹配
-    cleanup_aborted.py                   ← 检测 aborted run + 删除 + 重编号
+    cleanup_aborted.py                   ← 检测 aborted run + 删除 + 重编号（**等长范式**，众数推断）
+    postprocess_runs.py                  ← 按协议表剔废 run + 重编号 + 收敛 IntendedFor
+                                           （**变长范式必须用这个**，见 7a）
     generate_events_template.py          ← events 生成框架（项目特定参数外部传入）
     copy_auxiliary.sh                    ← physio/behavior 复制到 sourcedata
     extract_cmrr_physio_dicom.py         ← 从 PhysioLog DICOM 的 CSA Data 提取内嵌 log
@@ -206,6 +208,22 @@ python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --check-tmp
 
 4/4 项目有 aborted run。判定标准：volume 数显著低于期望值（如 1 vol、或 < 50% 期望值）。
 
+**先判断范式是等长还是变长，选错脚本会删掉好数据。**
+
+| 范式 | 特征 | 用哪个 |
+|---|---|---|
+| **等长** | 同 task 所有 run 一样长（固定时长的 block/event 设计、rest） | `cleanup_aborted.py` |
+| **变长** | 各 run 本来就不等长（自定步调、按键结束、每 run 对应素材的一段） | `postprocess_runs.py` |
+
+⚠️ **变长范式上 `cleanup_aborted.py` 会删错数据。** 它按「同 task 众数」推期望值。
+实测 HS7T/coco：7 个 run 的设计长度是 `464/470/419/467/479/427/216`，众数推出 470，
+于是 216 vol 的 **run-07 被判成 aborted**——按 `--auto` 跑会删掉 4 个已入库被试的完好数据。
+脚本现在会在 run 长度分布过宽时明确警告，但**判断范式类型是你的责任**。
+
+`cleanup_aborted.py` 还有一个历史坑：它原来只 glob `sub-*/ses-*/func/`，
+**无 session 布局的数据集会扫到 0 个文件然后报告「未发现 aborted run」**
+——什么都没看却报告一切正常。现已同时支持两种布局，且扫不到文件时直接报错。
+
 ```bash
 # 交互模式：展示异常 run，确认后删除并重编号
 python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids"
@@ -223,6 +241,34 @@ python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids" \
 # 非交互确认执行删除
 python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids" --yes
 ```
+
+变长范式走这个（期望值**必须来自扫描协议表，不要从数据里推**）：
+
+```bash
+# dry-run，逐 run 与协议表严格比对
+python3 "$SKILL_DIR/scripts/postprocess_runs.py" "$PROJECT_DIR/bids/sub-06" \
+    --task coco --expected 464,470,419,467,479,427,216
+
+# 确认无误后执行：剔废 run + 重编号 + 把 fmap IntendedFor 收敛成 1:1
+python3 "$SKILL_DIR/scripts/postprocess_runs.py" "$PROJECT_DIR/bids/sub-06" \
+    --task coco --expected 464,470,419,467,479,427,216 --apply
+```
+
+对不上协议表就整体停下、不动任何文件——宁可不做，也不能删错。
+
+#### 7a2. fmap 的 IntendedFor 必须收敛成 1:1
+
+**dcm2bids 的 `"IntendedFor": ["bold"]` 是累积的**：fmap run-01 指向 1 个 bold、
+run-02 指向 2 个、……run-07 指向 8 个。这几乎肯定不是你要的——每 run 一个
+reverse-PE 时，应当是 fmap run-N ↔ func run-N 的 1:1。
+
+实测 HS7T 四个已入库被试全是人工改成 1:1 的，此前没有工具。
+`postprocess_runs.py` 顺带做掉了，风格跟随数据集现状：
+
+- `--intendedfor-style relative`（默认）→ `func/sub-XX_task-YY_run-NN_bold.nii.gz`
+- `--intendedfor-style uri` → `bids::sub-XX/func/...`（dcm2bids 3.2 新版默认产出这种）
+
+**同一数据集里两种风格混用会很难查**，加被试时先看已有被试用的哪种。
 
 #### 7b. 重复结构像
 

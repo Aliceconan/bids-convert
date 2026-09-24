@@ -38,7 +38,16 @@ def find_aborted_runs(bids_dir, threshold_ratio):
     task_volumes = defaultdict(list)
     all_runs = []
 
-    for f in sorted(glob.glob(os.path.join(bids_dir, "sub-*/ses-*/func/*bold.nii.gz"))):
+    # session 层是可选的：BIDS 允许 sub-XX/func/ 直接放，单 session 项目普遍这么做。
+    # 原来只 glob "sub-*/ses-*/func/"，遇到无 session 的数据集会扫到 0 个文件，
+    # 然后一路走到「未发现 aborted run」——**什么都没看却报告一切正常**。
+    # 实测 HS7T 的 三个数据集全是无 session 布局，
+    # 一个 15 volume 的废 run 就是这么混进 BIDS 而不被发现的。
+    patterns = ["sub-*/ses-*/func/*bold.nii.gz", "sub-*/func/*bold.nii.gz"]
+    found = []
+    for pat in patterns:
+        found += glob.glob(os.path.join(bids_dir, pat))
+    for f in sorted(set(found)):
         vols = get_volumes(f)
         name = os.path.basename(f)
         parts = name.split("_")
@@ -48,6 +57,14 @@ def find_aborted_runs(bids_dir, threshold_ratio):
         task = task_parts[0]
         task_volumes[task].append(vols)
         all_runs.append({"path": f, "name": name, "vols": vols, "task": task})
+
+    if not all_runs:
+        # 扫不到任何 bold 必须明说。静默返回空会被读成「检查过了，没问题」，
+        # 而真实含义是「根本没看到数据」——这两件事结论相反。
+        raise SystemExit(
+            f"错误：在 {bids_dir} 下没找到任何 *_bold.nii.gz\n"
+            f"  已尝试的布局：{' 和 '.join(patterns)}\n"
+            f"  请确认路径指向 BIDS 根目录（含 sub-XX/ 的那一层）。")
 
     # 确定每个 task 的期望 volume 数（众数）
     task_expected = {}
@@ -62,7 +79,7 @@ def find_aborted_runs(bids_dir, threshold_ratio):
             run["expected"] = expected
             aborted.append(run)
 
-    return aborted, task_expected
+    return aborted, task_expected, task_volumes
 
 
 def delete_run(nii_path, dry_run=False):
@@ -136,11 +153,25 @@ def main():
                         help="只要发现 aborted run 就返回退出码 1")
     args = parser.parse_args()
 
-    aborted, task_expected = find_aborted_runs(args.bids_dir, args.threshold)
+    aborted, task_expected, task_volumes = find_aborted_runs(
+        args.bids_dir, args.threshold)
 
-    print("=== 期望 volume 数 ===")
+    print("=== 期望 volume 数（众数推断）===")
     for task, exp in sorted(task_expected.items()):
         print(f"  {task}: {exp} vols")
+
+    # 众数推断只在「同 task 所有 run 等长」时成立。变长范式（自定步调、
+    # 按键结束、每个 run 对应电影的一段）下各 run 本来就不等长，
+    # 众数会把正常的短 run 误判成 aborted —— 那是**删数据**，不是漏报。
+    for task, vols in sorted(task_volumes.items()):
+        uniq = sorted(set(vols))
+        if len(uniq) > 2 and min(uniq) < max(uniq) * 0.8:
+            print(f"\n  ⚠ {task} 的 run 长度分布很宽：{uniq[0]}–{uniq[-1]} vols，"
+                  f"共 {len(uniq)} 种取值")
+            print(f"    这像是**变长范式**，众数推断的期望值（{task_expected[task]}）不可靠，"
+                  f"正常的短 run 会被误判成 aborted。")
+            print(f"    请对照扫描协议表逐 run 核对后再删，"
+                  f"**不要用 --auto / --yes 直接执行**。")
 
     if not aborted:
         print("\n未发现 aborted run")
