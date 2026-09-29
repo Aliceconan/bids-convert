@@ -89,6 +89,15 @@ clean_before_rerun() {
     fi
 }
 
+# 转换前检查 config：dcm2bids 3.x 对写错位置的键（如顶层 intended_for）静默忽略，
+# 转完才发现 fmap 没有 IntendedFor 就得全部重跑（pitfalls #29）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! python3 "$SCRIPT_DIR/lint_config.py" "$CONFIG"; then
+    echo "错误: config 检查未通过，已停止。可用 lint_config.py --fix 自动改写 intended_for" >&2
+    exit 1
+fi
+echo ""
+
 echo "=== 开始转换 ==="
 echo "项目: $PROJECT_DIR"
 echo "模式: $($RERUN_MODE && echo '选择性重跑' || echo '全量转换')"

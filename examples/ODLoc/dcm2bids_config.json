@@ -73,7 +73,7 @@
           "any": ["REVERSE", "reverse", "*_reverse"]
         }
       },
-      "intended_for": ["bold_odloc"]
+      "sidecar_changes": {"IntendedFor": ["bold_odloc"]}
     },
     {
       "id": "bold_odloc",

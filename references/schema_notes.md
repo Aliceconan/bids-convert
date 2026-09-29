@@ -34,7 +34,7 @@
 | `func[].discrimination_hint` | 可为空 | 核心 | 当 variants 相同需靠其他字段区分时填写，如 "ImageType contains PHASE" |
 | `fmap[].sequence_type` | 必填 | 核心 | 目前只遇到 reverse_pe_epi |
 | `fmap[].pe_direction` | 必填 | 核心 | 区分 AP/PA 的关键 |
-| `fmap[].per_run` | 必填 | 核心 | 影响 fmap 数量验证和 intended_for |
+| `fmap[].per_run` | 必填 | 核心 | 影响 fmap 数量验证和 IntendedFor（config 里写在 sidecar_changes 下，见 pitfalls #29） |
 | `fmap[].series_description_variants` | 必填 | 核心 | 同上 |
 | `fmap[].discrimination_hint` | 可为空 | 核心 | 同 func，用于 fmap mag/phase 区分等 |
 | `auxiliary.physio` | 可为空 | 核心 | enabled=false 时其余字段忽略 |

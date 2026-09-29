@@ -16,7 +16,7 @@
 | 10 | 隐私信息泄露 | 1/4 | `participants_mapping.tsv` 和 `participants.tsv` 不含原始 ID/姓名/年龄 |
 | 11 | `--force_dcm2bids` 重跑太慢 | 1/4 | 仅修改匹配规则时不需要重跑 dcm2niix，去掉此 flag |
 | 12 | Dummy TRs 被忽略 | 1/4 | 比较 `n_TRs × TR` 与刺激总时长，差值 = dummy + baseline |
-| 13 | `IntendedFor` 路径写错 | 常见 | fmap JSON 里的 `IntendedFor` 必须是相对于 subject 目录的路径（如 `ses-pre/func/sub-01_ses-pre_task-rest_bold.nii.gz`），不是绝对路径 |
+| 13 | `IntendedFor` 路径写错 | 常见 | fmap JSON 里的 `IntendedFor` 要么是相对于 subject 目录的路径（如 `ses-pre/func/sub-01_ses-pre_task-rest_bold.nii.gz`），要么是 BIDS URI（`bids::sub-01/ses-pre/func/...`，dcm2bids 3.2 默认产出），不能是绝对路径。`validate.py --check-intendedfor` 两种都认、并核对目标文件存在 |
 | 14 | func sidecar 缺 `TaskName` → `TASK_NAME_MUST_DEFINE` ERROR | 常见 | 在根目录建 `task-<taskname>_bold.json`，写入 `{"TaskName": "<taskname>"}`；dcm2bids 有时不自动填 |
 | 15 | `dataset_description.json` 缺失或字段不全 | 常见 | 必须有 `Name`、`BIDSVersion`；`Authors` 向用户确认，`License` 默认填 `"CC0"`；空字符串字段（`""`）删掉，不要保留 |
 | 16 | `participants.tsv` 列名不合规 | 偶见 | 只允许 `participant_id` + BIDS 定义的列（`age`、`sex`、`handedness`）；自定义列不会报错但会被忽略 |
@@ -28,10 +28,11 @@
 | 22 | `INCONSISTENT_SUBJECTS`：部分被试缺某些 anat 文件 | 常见 | 如果是真实缺数据（扫描时未采集），此 warning 无法消除；记录在 decision_log 中，OpenNeuro 允许带此 warning 上传 |
 | 23 | `TOO_FEW_AUTHORS`：只有一位作者触发提示 | 偶见 | 仅为提醒是否漏填；确认无误后可忽略 |
 | 24 | `EVENTS_TSV_MISSING`：localizer / block-design 定位扫描无 events.tsv | localizer 项目 | 纯定位用途的 task fMRI（如 ODLoc）不需要 events.tsv；此 warning 可接受，OpenNeuro 允许带此 warning 上传 |
-| 25 | dcm2niix 完全跳过 CMRR PhysioLog DICOM | Siemens+CMRR | 对 `ImageType` 含 `RAWDATA\PHYSIO` 的 series，dcm2niix（实测 v1.0.20250505）无产物也无警告，极易被当成"没采生理数据"；用 `scripts/extract_cmrr_physio_dicom.py` 从 CSA Data `(7fe1,1010)` 提取内嵌 log |
+| 25 | dcm2niix 完全跳过 CMRR PhysioLog DICOM | Siemens+CMRR | 对 `ImageType` 含 `RAWDATA\PHYSIO` 的 series，dcm2niix（实测 v1.0.20250505）无产物也无警告，极易被当成"没采生理数据"；用 `scripts/extract_cmrr_physio_dicom.py` 从 CSA Data `(7fe1,1010)` 提取内嵌 log。**⚠ 版本相关**：v1.0.20260724 已会直接产出 `*_recording-{cardiac,respiratory}_physio.tsv.gz`（cardiac 200 Hz，StartTime 与本 skill 实测一致），但 dcm2bids 不配对它们，只留在 tmp 里——先 `dcm2niix -v` 看版本再决定走哪条 |
 | 26 | CSA Data 里 log 正文不紧跟文件名 | Siemens+CMRR | 打包格式是 `UINT32 dataLen` + `UINT32 nameLen` + 文件名 + **填充到块起点 +1024** + 正文；必须从 `块起点+1024` 读，不要假设紧邻文件名 |
 | 27 | PULS 与 RESP 采样率不同（实测 200 / 50 Hz） | Siemens+CMRR | BIDS 要求单个 `_physio.tsv.gz` 内所有列共享一个 `SamplingFrequency`；用 `recording-pulse` / `recording-respiratory` 分开存，不要重采样合并 |
 | 28 | 同一项目内 Physio recording 模式不一致 | CMRR 项目 | 同一天的两个 session 可能一个走 File 模式（独立 `.log`，留在扫描仪本地易漏导）一个走 DICOM 模式（PhysioLog series 混在 DICOM 里）；在 `participants_mapping.tsv` 加 `physio_mode` 列记录，两条路径分别处理后汇到同一 BIDS 格式 |
+| 29 | config 顶层 `intended_for` 被静默忽略，所有 fmap 都没有 IntendedFor | dcm2bids 3.x | 3.x 只认 `"sidecar_changes": {"IntendedFor": [...]}`；其它键被 `Acquisition(**kwargs)` 吞掉，不报错不警告。转换前 `scripts/lint_config.py`（`--fix` 自动改），转换后 `validate.py --check-intendedfor`。详见下文 |
 
 ## 详细说明
 
@@ -54,6 +55,45 @@ dcm2bids -d ... -p sub-01 -s ses-pre -c new_config.json -o bids
 ```
 
 `convert_parallel.sh --rerun` 已内置此逻辑。
+
+### #29 顶层 `intended_for` 被静默忽略（dcm2bids 3.x）
+
+**现象**：config 里 fmap 条目写了 `"intended_for": ["bold"]`，转换 exit 0、日志
+没有任何 WARNING，但所有 fmap 的 json 都没有 `IntendedFor`。
+
+**机制**（读 dcm2bids 3.2.0 源码确认）：description 除 `criteria` 外整个作为
+`Acquisition(participant, **desc)` 的参数，`Acquisition.__init__` 带 `**kwargs`，
+不认识的键直接被吞掉。IntendedFor 只在 `sidecar_changes` 里处理
+（`utils.DEFAULT.keyWithPathsidecar_changes = ['IntendedFor', 'Sources']`），
+写错 id 时这里才会有 `No id found` 的警告。
+
+**实测**（2026-09-29，dcm2bids 3.2.0，同一批数据两种写法各一条）：
+
+```
+"sidecar_changes": {"IntendedFor": "sbA"}  → "IntendedFor": "bids::sub-T/func/sub-T_task-rest_acq-A_sbref.nii.gz"
+"intended_for": ["sbB"]                     → 没有 IntendedFor，日志无警告
+```
+
+**后果**：下游只能按 run 号或采集时间猜配对。实测一场 session 里两套同矩阵的
+0.9mm 测试协议，QC 按时间就近把 A 协议的 func 配到了 B 协议的 reverse-PE 上，
+报出假的 3.65mm 头位差 fail（fmri-qc-raw pitfalls §5h）。
+
+**防线**（两道，都已接入）：
+
+```bash
+# 转换前：convert_parallel.sh 开跑前自动执行；有 error 直接停
+python3 "$SKILL_DIR/scripts/lint_config.py" code/dcm2bids_config.json
+python3 "$SKILL_DIR/scripts/lint_config.py" code/dcm2bids_config.json --fix   # 只改那一行，保留原格式
+
+# 转换后：完整验证默认包含；全部 fmap 缺失时会直接提示是这个原因
+python3 "$SKILL_DIR/scripts/validate.py" bids --check-intendedfor
+```
+
+**已入库数据怎么办**：跑 `validate.py --check-intendedfor` 看一眼。缺了的话，
+`lint_config.py --fix` 改 config 后 `convert_parallel.sh --rerun` 重跑即可
+（复用 tmp 里的 NIfTI，不重跑 dcm2niix）；每 run 一个 reverse 的项目还要再过一遍
+`postprocess_runs.py` 收敛成 1:1。本 skill 自带的两个 examples 原来也是旧写法，
+2026-09-29 已改。更早版本的 dcm2bids 认不认顶层 `intended_for` 未核实。
 
 ### #25–#28 CMRR 生理记录（Siemens）
 

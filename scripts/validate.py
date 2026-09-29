@@ -6,11 +6,13 @@ validate.py — 验证 BIDS 转换结果
   1. 文件数核对（anat/func/fmap 每个 session）
   2. Volume 检查（func bold 的 TR 数）
   3. 检测 tmp 中未匹配的文件
+  4. fmap 的 IntendedFor：是否存在、指向的文件是否存在
 
 用法:
   python3 validate.py <bids_dir> [--expected-anat 7] [--expected-func 7] [--expected-fmap 7]
   python3 validate.py <bids_dir> --volumes-only
   python3 validate.py <bids_dir> --check-tmp
+  python3 validate.py <bids_dir> --check-intendedfor
 """
 
 import argparse
@@ -95,7 +97,12 @@ def validate_volumes(bids_dir):
     results = defaultdict(set)
     runs = []
 
-    for f in sorted(glob.glob(os.path.join(bids_dir, "sub-*/ses-*/func/*bold.nii.gz"))):
+    # 经 iter_session_dirs 遍历：同时覆盖有 ses-* 层和无 session 层的数据集。
+    # 原来只 glob sub-*/ses-*/func，无 session 布局会扫到 0 个文件却报「一致」
+    files = []
+    for _, _, ses_dir in iter_session_dirs(bids_dir):
+        files += glob.glob(os.path.join(ses_dir, "func", "*bold.nii.gz"))
+    for f in sorted(files):
         vols = get_volumes(f)
         name = os.path.basename(f)
         print(f"  {name}: {vols} vols")
@@ -174,11 +181,66 @@ def check_tmp(bids_dir):
     return {"sessions": session_reports, "unmatched": unmatched}
 
 
-def build_summary(file_counts, volumes, tmp_report):
+def resolve_intended(bids_dir, sub_dir, target):
+    """IntendedFor 条目 → 磁盘路径。支持 BIDS URI（bids::sub-XX/...）和
+    相对 subject 目录的旧写法（ses-YY/func/... 或 func/...）。"""
+    if target.startswith("bids::"):
+        return os.path.join(bids_dir, target[len("bids::"):])
+    return os.path.join(sub_dir, target)
+
+
+def check_intendedfor(bids_dir):
+    """每个 fmap sidecar 都要有非空 IntendedFor，且每个目标文件都存在。
+
+    dcm2bids 3.x 对 config 里写错位置的 intended_for 静默忽略（pitfalls #29），
+    转完不会有任何报错；只有在这里查产物才发现得了。
+    """
+    print("=== fmap IntendedFor 检查 ===\n")
+    anomalies, fmaps = [], []
+    for sub, ses, ses_dir in iter_session_dirs(bids_dir):
+        sub_dir = os.path.join(bids_dir, sub)
+        for j in sorted(glob.glob(os.path.join(ses_dir, "fmap", "*.json"))):
+            name = os.path.basename(j)
+            try:
+                d = json.load(open(j))
+            except Exception as e:                                # noqa: BLE001
+                anomalies.append({"fmap": name, "problem": f"json 读取失败: {e}"})
+                continue
+            ifor = d.get("IntendedFor")
+            targets = [] if ifor is None else ([ifor] if isinstance(ifor, str) else list(ifor))
+            missing = [t for t in targets
+                       if not os.path.exists(resolve_intended(bids_dir, sub_dir, t))]
+            fmaps.append({"subject": sub, "session": ses, "fmap": name,
+                          "n_targets": len(targets), "missing_targets": missing})
+            if not targets:
+                anomalies.append({"subject": sub, "session": ses, "fmap": name,
+                                  "problem": "没有 IntendedFor"})
+                print(f"  {name}: *** 没有 IntendedFor")
+            elif missing:
+                anomalies.append({"subject": sub, "session": ses, "fmap": name,
+                                  "problem": f"{len(missing)} 个目标不存在", "missing": missing})
+                print(f"  {name}: {len(targets)} 个目标，*** {len(missing)} 个不存在: {missing[:2]}")
+            else:
+                print(f"  {name}: {len(targets)} 个目标")
+    if not fmaps:
+        print("  没有 fmap sidecar")
+    elif anomalies:
+        n_none = sum(a["problem"] == "没有 IntendedFor" for a in anomalies)
+        print(f"\n发现 {len(anomalies)} 个异常")
+        if n_none == len(fmaps):
+            print("  全部 fmap 都没有 IntendedFor —— 多半是 config 用了顶层 intended_for，"
+                  "dcm2bids 3.x 会静默忽略。跑 scripts/lint_config.py 检查（pitfalls #29）")
+    else:
+        print("\n全部正常")
+    return {"fmaps": fmaps, "anomalies": anomalies}
+
+
+def build_summary(file_counts, volumes, tmp_report, ifor_report=None):
     return {
         "file_count_anomalies": len(file_counts["anomalies"]),
         "volume_anomalies": len(volumes["anomalies"]),
         "tmp_unmatched": len(tmp_report["unmatched"]),
+        "intendedfor_anomalies": len(ifor_report["anomalies"]) if ifor_report else 0,
         "sessions_checked": len(file_counts["sessions"]),
         "bold_runs_checked": len(volumes["runs"]),
     }
@@ -192,6 +254,8 @@ def main():
     parser.add_argument("--expected-fmap", type=int, default=None, help="期望的 fmap 文件数")
     parser.add_argument("--volumes-only", action="store_true", help="只检查 volumes")
     parser.add_argument("--check-tmp", action="store_true", help="只检查 tmp 未匹配文件")
+    parser.add_argument("--check-intendedfor", action="store_true",
+                        help="只检查 fmap 的 IntendedFor 是否存在、目标是否存在")
     parser.add_argument("--json", action="store_true", help="输出 JSON 摘要到 stdout")
     parser.add_argument("--fail-on-anomaly", action="store_true",
                         help="发现任何异常时返回退出码 1")
@@ -227,6 +291,15 @@ def main():
             sys.exit(1)
         return
 
+    if args.check_intendedfor:
+        ifor = check_intendedfor(args.bids_dir)
+        if args.json:
+            print(json.dumps({"summary": {"intendedfor_anomalies": len(ifor["anomalies"])},
+                              "intendedfor": ifor}, ensure_ascii=False, indent=2))
+        if args.fail_on_anomaly and ifor["anomalies"]:
+            sys.exit(1)
+        return
+
     # 完整验证
     expected = {
         "anat": args.expected_anat,
@@ -238,20 +311,24 @@ def main():
     volumes = validate_volumes(args.bids_dir)
     print()
     tmp_report = check_tmp(args.bids_dir)
+    print()
+    ifor_report = check_intendedfor(args.bids_dir)
 
-    summary = build_summary(file_counts, volumes, tmp_report)
+    summary = build_summary(file_counts, volumes, tmp_report, ifor_report)
     if args.json:
         payload = {
             "summary": summary,
             "file_counts": file_counts,
             "volumes": volumes,
             "tmp": tmp_report,
+            "intendedfor": ifor_report,
         }
         print()
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
     if args.fail_on_anomaly and any(summary[key] > 0 for key in [
-        "file_count_anomalies", "volume_anomalies", "tmp_unmatched"
+        "file_count_anomalies", "volume_anomalies", "tmp_unmatched",
+        "intendedfor_anomalies",
     ]):
         sys.exit(1)
 

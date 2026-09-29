@@ -29,8 +29,9 @@ bids-convert/
   SKILL.md
   scripts/
     scout.sh                             ← 侦察：跑 helper + 收集变体
-    convert_parallel.sh                  ← 并行转换（含安全重跑逻辑）
-    validate.py                          ← 文件数 + volume 检查 + tmp 未匹配
+    lint_config.py                       ← 转换前查 config 里会被 dcm2bids 静默忽略的写法（--fix 自动改）
+    convert_parallel.sh                  ← 并行转换（含安全重跑逻辑；转换前自动跑 lint_config）
+    validate.py                          ← 文件数 + volume 检查 + tmp 未匹配 + fmap IntendedFor
     cleanup_aborted.py                   ← 检测 aborted run + 删除 + 重编号（**等长范式**，众数推断）
     postprocess_runs.py                  ← 按协议表剔废 run + 重编号 + 收敛 IntendedFor
                                            （**变长范式必须用这个**，见 7a）
@@ -44,7 +45,7 @@ bids-convert/
     decision_log.md                      ← 决策记录模板
   references/
     schema_notes.md                      ← project_config.yaml 字段说明
-    pitfalls.md                          ← 已知陷阱与解法（23 条）
+    pitfalls.md                          ← 已知陷阱与解法（29 条）
     mp2rage_cheatsheet.md                ← MP2RAGE 11 种输出速查
     project_diffs.md                     ← 4 项目差异对照表
   examples/
@@ -61,9 +62,9 @@ bids-convert/
 [1] 初始化     → 复制模板、建立项目目录
 [2] 侦察       → dcm2bids_helper 收集 SeriesDescription
 [3] 交互确认   → 与用户逐项确认 config 字段
-[4] 生成配置   → dcm2bids_config.json + participants_mapping.tsv
+[4] 生成配置   → dcm2bids_config.json + participants_mapping.tsv，lint_config.py 检查
 [5] 并行转换   → dcm2bids 批量转换
-[6] 验证       → volume 检查、文件数核对
+[6] 验证       → volume 检查、文件数核对、fmap IntendedFor
 [7] 后处理     → 清理 aborted run、重编号、处理重复 anat
 [8] 辅助数据   → physio / behavior → sourcedata
 [9] Events     → 根据范式文档生成 events.tsv（仅 task fMRI）
@@ -130,11 +131,24 @@ bash "$SKILL_DIR/scripts/scout.sh" <session_folder> /tmp/scout_<name>
         "SeriesDescription": { "any": ["pattern1", "Pattern1", "PATTERN1"] },
         "PhaseEncodingDirection": "j-"
       },
-      "intended_for": ["<other_id>"]
+      "sidecar_changes": {"IntendedFor": ["<other_id>"]}
     }
   ]
 }
 ```
+
+⚠ **IntendedFor 只能写在 `sidecar_changes` 里。** dcm2bids 3.x 把 description
+的其它键全部塞进 `Acquisition(**kwargs)` 吞掉，顶层 `"intended_for"` / `"intendedFor"`
+（旧写法）**不报错、不警告、不生效**，转完所有 fmap 都没有 IntendedFor（实测 3.2.0，
+pitfalls #29）。写完 config 先跑：
+
+```bash
+python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json"
+# 发现旧写法可自动改（只替换那一行，保留原格式）
+python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json" --fix
+```
+
+`convert_parallel.sh` 开跑前也会自动跑一遍，有 error 直接停。
 
 **SeriesDescription 匹配规则：**
 - `dcm2bids` 使用 Python `fnmatch`，**区分大小写**
@@ -194,7 +208,15 @@ python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --volumes-only
 
 # 仅检查 tmp 未匹配
 python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --check-tmp
+
+# 仅检查 fmap IntendedFor：每个 fmap 都要有，且指向的文件存在（BIDS URI 与相对路径都认）
+python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --check-intendedfor
 ```
+
+完整验证默认包含 IntendedFor 检查，异常计入 `--fail-on-anomaly`。
+**全部 fmap 都没有 IntendedFor** 几乎一定是 config 写成了顶层 `intended_for`：
+用 `lint_config.py --fix` 改 config，再 `convert_parallel.sh --rerun` 重跑
+（tmp 里的 NIfTI 可复用，不用重跑 dcm2niix）。
 
 **验证异常的处理路径：**
 - 文件数低于期望 → 跑 `--check-tmp` 确认 tmp 中是否有未匹配 NIfTI → 更新 config → 重跑受影响 session

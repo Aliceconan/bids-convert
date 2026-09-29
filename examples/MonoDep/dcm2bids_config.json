@@ -74,7 +74,7 @@
         },
         "PhaseEncodingDirection": "j"
       },
-      "intended_for": ["bold_eyedep", "bold_loc", "bold_rest"]
+      "sidecar_changes": {"IntendedFor": ["bold_eyedep", "bold_loc", "bold_rest"]}
     },
     {
       "id": "bold_eyedep",
