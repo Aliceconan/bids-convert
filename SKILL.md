@@ -32,6 +32,12 @@ MRI DICOM → BIDS。经验最强的是 Siemens + MP2RAGE + EPI BOLD + reverse-P
 | [10] 记录 | 所有人工判断的「为什么」 | 填 `code/decision_log.md` |
 | [11] BIDS 合规 | 上传 OpenNeuro 前最后一道门 | `npx bids-validator $PROJECT_DIR/bids --ignoreNiftiHeaders`；ERROR 必修，WARNING 酌情 |
 
+## 文件放哪
+
+- `$PROJECT_DIR` 由用户给；没给就问，**不要默认用 `$HOME` 或当前目录**（ssh 远程执行时当前目录就是 `~`）。
+  只是试转一两个 session 时，用 `$HOME/work/<YYYYMMDD>_bids_<说明>/` 当 `$PROJECT_DIR`。
+- 临时脚本、nohup 日志放 `$PROJECT_DIR/code/logs/`，不要写在 `$HOME` 根下；路径一律写绝对路径。
+
 ## config 要点（[4]）
 
 ```json
