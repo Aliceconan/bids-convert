@@ -1,0 +1,18 @@
+{
+  "_comment": "字段说明见 references/project_spec.md。路径可写绝对路径；bids_dir/work_dir 写相对路径时相对项目目录。",
+  "name": "",
+  "raw_root": "",
+  "bids_dir": "bids",
+  "work_dir": "work",
+  "dcm2bids": "dcm2bids",
+  "dcm2niix": "dcm2niix",
+  "jobs": 4,
+  "cache_mode": "hardlink",
+  "fmap_pairing": "",
+  "anat_duplicates": "ask",
+  "unmatched_func": "ask",
+  "unpaired_fmap": "ask",
+  "authors": [],
+  "license": "",
+  "participants_demographics": false
+}

@@ -1,161 +1,115 @@
 # 已知陷阱与解法
 
-基于 4 个已完成项目（ODLoc / EYEDEP_CRF / MP_CRF / MonoDep）总结。
+来源：ODLoc / EYEDEP_CRF / MP_CRF / MonoDep 四个项目，以及 HS7T 电影 fMRI（2026-09～10，coco/nezha/andy/xiju）。
+dcm2bids 的行为均对照 3.2.0 源码或实测确认（标注「实测」的是在真实数据上跑出来的）。
 
-| # | 陷阱 | 频率 | 解法 |
-|---|------|------|------|
-| 1 | SeriesDescription 大小写不一致 | 4/4 | config 用 `any` 列出所有变体；按大小写不敏感处理 |
-| 2 | 早期被试命名与后期完全不同 | 2/4 | 侦察必须包含最早日期被试 |
-| 3 | Aborted run（1 vol 或部分 vol） | 4/4 | `scripts/validate.py` 检测 → `scripts/cleanup_aborted.py` 清理 |
-| 4 | 重复结构像（同 session 扫两次 MP2RAGE） | 2/4 | 询问用户保留策略，不要默认假设 |
-| 5 | fnmatch 区分大小写 | 4/4 | 显式列出所有大小写形式在 `any` 列表中 |
-| 6 | Physio 路径不可预测 | 2/4 | `ls` 确认，不要猜路径或大小写 |
-| 7 | 串行转换太慢 | 1/4 | 始终用 `scripts/convert_parallel.sh`（shell `&` + `wait`） |
-| 8 | 重跑残留旧文件 | — | 重跑前 `rm -rf bids/sub-XX/ses-YY/`，保留 tmp；见 `convert_parallel.sh --rerun` |
-| 9 | fmap 与 bold 的 SD 相同 | 3/4 | 加 `PhaseEncodingDirection` 区分（fmap 通常 PE 反向） |
-| 10 | 隐私信息泄露 | 1/4 | `participants_mapping.tsv` 和 `participants.tsv` 不含原始 ID/姓名/年龄 |
-| 11 | `--force_dcm2bids` 重跑太慢 | 1/4 | 仅修改匹配规则时不需要重跑 dcm2niix，去掉此 flag |
-| 12 | Dummy TRs 被忽略 | 1/4 | 比较 `n_TRs × TR` 与刺激总时长，差值 = dummy + baseline |
-| 13 | `IntendedFor` 路径写错 | 常见 | fmap JSON 里的 `IntendedFor` 要么是相对于 subject 目录的路径（如 `ses-pre/func/sub-01_ses-pre_task-rest_bold.nii.gz`），要么是 BIDS URI（`bids::sub-01/ses-pre/func/...`，dcm2bids 3.2 默认产出），不能是绝对路径。`validate.py --check-intendedfor` 两种都认、并核对目标文件存在 |
-| 14 | func sidecar 缺 `TaskName` → `TASK_NAME_MUST_DEFINE` ERROR | 常见 | 在根目录建 `task-<taskname>_bold.json`，写入 `{"TaskName": "<taskname>"}`；dcm2bids 有时不自动填 |
-| 15 | `dataset_description.json` 缺失或字段不全 | 常见 | 必须有 `Name`、`BIDSVersion`；`Authors` 向用户确认，`License` 默认填 `"CC0"`；空字符串字段（`""`）删掉，不要保留 |
-| 16 | `participants.tsv` 列名不合规 | 偶见 | 只允许 `participant_id` + BIDS 定义的列（`age`、`sex`、`handedness`）；自定义列不会报错但会被忽略 |
-| 17 | `.bidsignore` 缺失导致额外文件报错 | 偶见 | BIDS 目录内所有不符合命名规范的文件都会报 ERROR；把 `code/`、`sourcedata/` 以外的杂项加进 `.bidsignore` |
-| 18 | events.tsv 缺 `onset` 或 `duration` 列 | 偶见 | 这两列是必填；列名必须全小写；时间单位为秒 |
-| 19 | `bids-validator` 命令找不到（`command not found`） | 常见 | 全局安装不在 `$PATH` 是常态；始终用 `npx bids-validator` 调用，不要直接调用裸命令 |
-| 20 | dcm2bids 输出的 `rec-DIV_MP2RAGE` 被报 `NOT_INCLUDED` ERROR | MP2RAGE 项目 | BIDS validator 不识别无 `inv-`/`part-` 的 `_MP2RAGE` suffix 变体；把 `**/*_rec-DIV_MP2RAGE.nii.gz` 和 `**/*_rec-DIV_MP2RAGE.json` 写入根目录 `.bidsignore` |
-| 21 | events.tsv 自定义列（如 `contrast`、`condition`）报 `CUSTOM_COLUMN_WITHOUT_DESCRIPTION` | task fMRI | 在根目录建 `task-<taskname>_events.json`，为每个自定义列写 `LongName` 和 `Description`（以及 `Levels` 如果是类别变量） |
-| 22 | `INCONSISTENT_SUBJECTS`：部分被试缺某些 anat 文件 | 常见 | 如果是真实缺数据（扫描时未采集），此 warning 无法消除；记录在 decision_log 中，OpenNeuro 允许带此 warning 上传 |
-| 23 | `TOO_FEW_AUTHORS`：只有一位作者触发提示 | 偶见 | 仅为提醒是否漏填；确认无误后可忽略 |
-| 24 | `EVENTS_TSV_MISSING`：localizer / block-design 定位扫描无 events.tsv | localizer 项目 | 纯定位用途的 task fMRI（如 ODLoc）不需要 events.tsv；此 warning 可接受，OpenNeuro 允许带此 warning 上传 |
-| 25 | dcm2niix 完全跳过 CMRR PhysioLog DICOM | Siemens+CMRR | 对 `ImageType` 含 `RAWDATA\PHYSIO` 的 series，dcm2niix（实测 v1.0.20250505）无产物也无警告，极易被当成"没采生理数据"；用 `scripts/extract_cmrr_physio_dicom.py` 从 CSA Data `(7fe1,1010)` 提取内嵌 log。**⚠ 版本相关**：v1.0.20260724 已会直接产出 `*_recording-{cardiac,respiratory}_physio.tsv.gz`（cardiac 200 Hz，StartTime 与本 skill 实测一致），但 dcm2bids 不配对它们，只留在 tmp 里——先 `dcm2niix -v` 看版本再决定走哪条 |
-| 26 | CSA Data 里 log 正文不紧跟文件名 | Siemens+CMRR | 打包格式是 `UINT32 dataLen` + `UINT32 nameLen` + 文件名 + **填充到块起点 +1024** + 正文；必须从 `块起点+1024` 读，不要假设紧邻文件名 |
-| 27 | PULS 与 RESP 采样率不同（实测 200 / 50 Hz） | Siemens+CMRR | BIDS 要求单个 `_physio.tsv.gz` 内所有列共享一个 `SamplingFrequency`；用 `recording-pulse` / `recording-respiratory` 分开存，不要重采样合并 |
-| 28 | 同一项目内 Physio recording 模式不一致 | CMRR 项目 | 同一天的两个 session 可能一个走 File 模式（独立 `.log`，留在扫描仪本地易漏导）一个走 DICOM 模式（PhysioLog series 混在 DICOM 里）；在 `participants_mapping.tsv` 加 `physio_mode` 列记录，两条路径分别处理后汇到同一 BIDS 格式 |
-| 29 | config 顶层 `intended_for` 被静默忽略，所有 fmap 都没有 IntendedFor | dcm2bids 3.x | 3.x 只认 `"sidecar_changes": {"IntendedFor": [...]}`；其它键被 `Acquisition(**kwargs)` 吞掉，不报错不警告。转换前 `scripts/lint_config.py`（`--fix` 自动改），转换后 `validate.py --check-intendedfor`。详见下文 |
+| # | 陷阱 | 解法 |
+|---|------|------|
+| 1 | SeriesDescription 大小写不一致（4/4 项目） | config 顶层 `"case_sensitive": false`（dcm2bids 3.x 原生支持，把名字和 pattern 都转小写再 fnmatch）。**不要再在 `any` 里罗列大小写变体** |
+| 2 | 早期被试命名与后期完全不同 | 侦察必须覆盖最早日期；看 scout 跨 session 汇总的「变体」列 |
+| 3 | 中断的 run（1 vol 或部分 vol） | protocol.tsv 写期望帧数；finalize 对不上协议的 bold 按 `unmatched_func` 处理（ask/discard），剔除的移到 `work/discarded/` |
+| 4 | 重复结构像（同 session 扫两次） | `anat_duplicates` 默认 ask；⏸ 问用户后写 decisions（first/last/all 或 discard sn=…） |
+| 5 | （并入 #1） | |
+| 6 | Physio / 行为数据路径不可预测 | `ls` 确认后写进 mapping；不要猜路径或大小写 |
+| 7 | 串行转换太慢 | `convert.py` 并行（`jobs`）；7T 单场 dcm2niix 吃内存和 IO，别开太大 |
+| 8 | **重跑丢数据**（旧版 `convert_parallel.sh --rerun` 与本表旧版 #8/#11 的建议） | dcm2bids 匹配成功后把 NIfTI 从 tmp 移走；「删 BIDS 输出 + 不加 force 重跑」实测产出为空、**退出码 0**。现在 convert.py 每次从独立的 dcm2niix 缓存重新灌 tmp。见下文 |
+| 9 | fmap 与 bold 的 SeriesDescription 相同/相近 | criteria 加 `PhaseEncodingDirection`；同名不同协议加 `SliceThickness` 等（#35） |
+| 10 | 隐私信息泄露 | `participants_mapping.tsv` 与 decisions 不写姓名、原始编号、出生日期。`participants.tsv` 里的 age/sex 是 BIDS 标准列（去标识化），要不要放由用户定（`participants_demographics`） |
+| 11 | dcm2niix 太慢 | 缓存 `work/dcm2niix/`；只有换 dcm2niix 版本或改 `dcm2niixOptions` 才 `--refresh-cache`（标记文件会自动发现版本/参数变化） |
+| 12 | Dummy TRs 被忽略 | 比较 `n_TRs × TR` 与刺激总时长，差值 = dummy + baseline |
+| 13 | `IntendedFor` 路径写法 | 只有两种合法：`bids::sub-01/[ses-x/]func/…`（BIDS 1.9 推荐）或相对被试目录 `[ses-x/]func/…`；不能是绝对路径。写法由 config `bids_uri` 声明，finalize 跟随，validate 检查统一（#42） |
+| 14 | func sidecar 缺 `TaskName` → `TASK_NAME_MUST_DEFINE` ERROR | **不是「有时不填」，是确定不填**：dcm2bids 只在用 extractors 从 SeriesDescription 提取 task 时写 TaskName；`custom_entities` 写死 `task-X` 时没有。每个 func 条目写 `"sidecar_changes": {"TaskName": "X"}`（lint 强制，`--fix` 自动补）；finalize 也会兜底补上 |
+| 15 | `dataset_description.json` 缺失或字段不全 | `init_metadata.py`：必有 Name/BIDSVersion/DatasetType；Authors 问用户、填了才写；不留空字符串字段 |
+| 16 | `participants.tsv` 列 | BIDS 定义的 `age`/`sex`/`handedness` 可直接用；其他列要在 `participants.json` 描述，否则 CUSTOM_COLUMN warning |
+| 17 | 额外文件报错 | `.bidsignore` 写 `tmp_dcm2bids/` 等（init_metadata 自动建） |
+| 18 | events.tsv 缺 `onset`/`duration` | 必填、全小写、单位秒 |
+| 19 | `bids-validator` 找不到 | 用 `npx bids-validator`；服务器无 node 时在能挂载数据的机器上跑（workflow [11]） |
+| 20 | `rec-DIV_MP2RAGE` 被报 `NOT_INCLUDED` | 写进 `.bidsignore`：`**/*_rec-DIV_MP2RAGE.*` |
+| 21 | events 自定义列 `CUSTOM_COLUMN_WITHOUT_DESCRIPTION` | 根目录 `task-<task>_events.json` 描述每列 |
+| 22 | `INCONSISTENT_SUBJECTS` | 真实缺数据时消不掉；记 decision_log，OpenNeuro 可带此 warning |
+| 23 | `TOO_FEW_AUTHORS` | 只是提醒 |
+| 24 | `EVENTS_TSV_MISSING` | 定位扫描、电影观看等不建模的 task 可接受 |
+| 25 | dcm2niix 跳过 CMRR PhysioLog DICOM | v1.0.20250505 无产物无警告；v1.0.20260724 产出 physio.tsv.gz 但 dcm2bids 不配对。用 `physio_to_bids.py`（从 CSA Data 提取，两版都可靠） |
+| 26 | CSA Data 里 log 正文不紧跟文件名 | 块起点 +0 dataLen、+4 nameLen、+8 文件名、**+1024 正文**；用正则定位文件名反推块起点并核对 nameLen，不依赖对齐 |
+| 27 | PULS / RESP 采样率不同（200 / 50 Hz） | 分 `recording-pulse` / `recording-respiratory` 两套，不重采样 |
+| 28 | 同一项目 Physio recording 模式混用（File/DICOM） | mapping 的 `physio_mode` 逐 session 记录；DICOM 模式更可靠（File 模式 log 留在扫描仪本地，漏导就没了） |
+| 29 | config 顶层 `intended_for` 被静默忽略 | 3.x 只认 `sidecar_changes.IntendedFor`；`Acquisition(**kwargs)` 吞掉其它键，不报错不警告。lint 拦截、`--fix` 改写 |
+| 30 | dcm2bids 不加 force 时看到 tmp 非空就**跳过 dcm2niix** | 这是 #8 的机制。也是 convert.py 能复用缓存的原理：先把缓存灌进 tmp，再调 dcm2bids |
+| 31 | dcm2bids 的 `"IntendedFor": ["bold"]` 是**累积**的 | 按处理顺序，第 k 个 fmap 指向此前已处理的全部 bold（实测 1、2、…、8 条）；fmap 若先于 bold 采集则一条都没有。且引用改名前的文件名。finalize 按 `fmap_pairing` 用采集时间重配 |
+| 32 | 单个 run 不加 run 实体；废 run 也占 run 号 | dcm2bids 只在同名冲突时编 run。finalize 按协议重编：run 号 = 协议位置；协议多于 1 个 run 的 task 一律带 run |
+| 33 | 一个 series 匹配多条规则 → dcm2bids **跳过它**，只打 WARNING（Several Pairing） | convert/preview 把它当错误；改 criteria 使其互斥 |
+| 34 | `search_method: "re"` 用 `re.match` | 只锚定开头（`run_01` 也匹配 `run_01_SBRef`），末尾加 `$`；`case_sensitive` 对 re 不生效，用 `(?i)` |
+| 35 | 测试序列与正式序列同名（HS7T：0.9mm FALL 测试的 reverse 也叫 `reverse_PE_01`） | criteria 加区分字段，如 `"SliceThickness": {"btwe": [1.1, 1.3]}`；或 decisions `discard`。会撞进 fmap 打乱配对 |
+| 36 | 扫描仪软件中途重启 → SeriesNumber 从 1 重来、撞号 | scout/physio 按 SeriesInstanceUID 归组；dcm2niix 文件名模板含 `%p`（协议名）才不会互相覆盖，别改成不含 `%p` 的模板；decisions 用 `sn=…&time=…` |
+| 37 | dcm2niix v1.0.20250505 写 AcquisitionTime 秒数不补零（`"11:41:1.870000"`）实测 | 解析时分秒都按 1–2 位接受（bids_common.parse_time）；自己写脚本解析时间时注意 |
+| 38 | `dcm2bids --skip_dcm2niix` 要 Python ≥3.8（`copytree(dirs_exist_ok=)`） | 不用它；convert.py 自己灌 tmp，dcm2bids 装在 3.7 也能用。不要为此新建/升级环境 |
+| 39 | 剔除废 run 后按顺序重编号 | 缺扫一段时后面的 run 全部前移，电影片段对错（跨被试按 run 对齐就错了）。run 号必须 = 协议位置，允许缺号 |
+| 40 | 从数据推期望帧数（众数/最大值） | 变长范式必错：coco 7 段长度 464/470/419/467/479/427/216，众数推出 470，216 的 run-07 被判废片——**按旧脚本 `--auto` 会删掉 4 个被试的好数据**。期望值只能来自协议表 |
+| 41 | 硬链接缓存 + 原地修改 NIfTI 的工具 | 硬链接下原地改写会连缓存一起改。dcm2bids `post_op` 或其他原地修改工具 → `cache_mode: copy` |
+| 42 | 同一数据集 IntendedFor 写法混用 | 合法但难查（自己写的脚本按「被试目录 + IntendedFor」拼路径会静默找不到 `bids::` 条目）。由 config `bids_uri` 统一声明；validate 检查 |
+| 43 | 从目录名/序列名里抠 run 号来配对（旧版 physio 按 `run_(\d+)$`） | 测试序列 `FALL_run_01` 也被认成 run 01，且按字母顺序先占位，真正的 XIJU_run_01 被当重复跳过——交付数据里 run-01 的生理记录其实是测试序列的（实测，NumVolumes 50 ≠ 406）。配对一律按采集时间，名字只用于显示 |
+| 44 | 默认配对规则给出的 reverse 实际用不了（中途重新匀场 / 重新定位 / 发射校准被改） | 时间相邻≠可用。finalize 对每个配对体检（ShimSetting、ImagingFrequency、TxRefAmp、sform 扫描框），不通过只报警并给候选和 `pair` 行，由人决定；头动造成的错位仍需 QC 配准 |
 
 ## 详细说明
 
-### #8 重跑残留旧文件（重要）
+### #8 / #30 重跑丢数据
 
-`dcm2bids` 重跑时 **不会清理上一次的 BIDS 输出**。如果修改 config 导致某些文件不再被匹配，旧文件会残留在 BIDS 目录中。
+dcm2bids 3.2.0 `dcm2bids_gen.move()`：NIfTI 用 `os.rename` 从 `tmp_dcm2bids/<sub>/` **移**到 BIDS 目录，
+sidecar 写出新文件后 `os.remove` 掉 tmp 里的。所以转换完 tmp 里只剩**没匹配上**的文件。
+`dcm2niix_gen.run()`：tmp 目录非空且没有 `--force_dcm2bids` 时**不跑 dcm2niix**，直接用 tmp 里现有的文件。
 
-**错误做法：**
-```bash
-# 直接重跑 — 旧文件残留！
-dcm2bids -d ... -p sub-01 -s ses-pre -c new_config.json -o bids
-```
+两者叠加：删掉 BIDS 输出再不加 force 重跑 → 只剩上次没匹配上的文件可用 → 产出为空。
+实测（2026-10-19，COCO_S07 子集）：第一次 4 个文件；删 `bids/sub-T` 后重跑，**产出 0 个文件，退出码 0**，
+日志里只有一句 `Use --force_dcm2bids to rerun dcm2bids` 的 WARNING。
 
-**正确做法：**
-```bash
-# 先清理该 session 的 BIDS 输出
-rm -rf bids/sub-01/ses-pre/
-# 再重跑（不加 --force_dcm2bids 以复用 tmp 中的 NIfTI）
-dcm2bids -d ... -p sub-01 -s ses-pre -c new_config.json -o bids
-```
-
-`convert_parallel.sh --rerun` 已内置此逻辑。
-
-### #29 顶层 `intended_for` 被静默忽略（dcm2bids 3.x）
-
-**现象**：config 里 fmap 条目写了 `"intended_for": ["bold"]`，转换 exit 0、日志
-没有任何 WARNING，但所有 fmap 的 json 都没有 `IntendedFor`。
-
-**机制**（读 dcm2bids 3.2.0 源码确认）：description 除 `criteria` 外整个作为
-`Acquisition(participant, **desc)` 的参数，`Acquisition.__init__` 带 `**kwargs`，
-不认识的键直接被吞掉。IntendedFor 只在 `sidecar_changes` 里处理
-（`utils.DEFAULT.keyWithPathsidecar_changes = ['IntendedFor', 'Sources']`），
-写错 id 时这里才会有 `No id found` 的警告。
-
-**实测**（2026-09-29，dcm2bids 3.2.0，同一批数据两种写法各一条）：
+旧版 skill 把这当成「快速重跑」推荐（`convert_parallel.sh --rerun`、本表旧 #8/#11），是错的。现在：
 
 ```
-"sidecar_changes": {"IntendedFor": "sbA"}  → "IntendedFor": "bids::sub-T/func/sub-T_task-rest_acq-A_sbref.nii.gz"
-"intended_for": ["sbB"]                     → 没有 IntendedFor，日志无警告
+work/dcm2niix/<sub>/     dcm2niix 原始输出，永不被 dcm2bids 碰
+   │  硬链接（或复制）
+   ▼
+bids/tmp_dcm2bids/<sub>/  每次转换前清空重灌，dcm2bids 随便移
 ```
 
-**后果**：下游只能按 run 号或采集时间猜配对。实测一场 session 里两套同矩阵的
-0.9mm 测试协议，QC 按时间就近把 A 协议的 func 配到了 B 协议的 reverse-PE 上，
-报出假的 3.65mm 头位差 fail（fmri-qc-raw pitfalls §5h）。
+### #14 TaskName
 
-**防线**（两道，都已接入）：
+`sidecar.py` 的 `searchDcmTagEntity()` 只在 `concatenated_matches` 里有 `task`（即 extractors 从
+SeriesDescription 用正则提取到了 task）时执行 `sidecar.data['TaskName'] = …`；`acquisition.py` 只在
+dcm2niix 原始 sidecar 里有 TaskName 时复制（dcm2niix 不写这个字段）。写死 `task-X` 两条路都不走。
+HS7T 的 coco/nezha/andy 从 9 月起所有 bold 都缺 TaskName，因为一直没跑 bids-validator 才没发现。
 
-```bash
-# 转换前：convert_parallel.sh 开跑前自动执行；有 error 直接停
-python3 "$SKILL_DIR/scripts/lint_config.py" code/dcm2bids_config.json
-python3 "$SKILL_DIR/scripts/lint_config.py" code/dcm2bids_config.json --fix   # 只改那一行，保留原格式
+### #29 顶层 `intended_for`
 
-# 转换后：完整验证默认包含；全部 fmap 缺失时会直接提示是这个原因
-python3 "$SKILL_DIR/scripts/validate.py" bids --check-intendedfor
-```
+description 除 `criteria` 外整个作为 `Acquisition(participant, **desc)` 的参数，`__init__` 带 `**kwargs`，
+不认识的键被吞掉。IntendedFor 只在 `sidecar_changes` 里处理（`DEFAULT.keyWithPathsidecar_changes`）。
+实测：`sidecar_changes` 写法 → 有 IntendedFor；顶层 `intended_for` → 没有，日志无警告。
+后果：下游只能按 run 号或时间猜配对；实测一场里两套同矩阵测试协议，QC 把 A 协议的 func 配到 B 协议的
+reverse-PE 上，报出假的 3.65 mm 头位差。
 
-**已入库数据怎么办**：跑 `validate.py --check-intendedfor` 看一眼。缺了的话，
-`lint_config.py --fix` 改 config 后 `convert_parallel.sh --rerun` 重跑即可
-（复用 tmp 里的 NIfTI，不重跑 dcm2niix）；每 run 一个 reverse 的项目还要再过一遍
-`postprocess_runs.py` 收敛成 1:1。本 skill 自带的两个 examples 原来也是旧写法，
-2026-09-29 已改。更早版本的 dcm2bids 认不认顶层 `intended_for` 未核实。
+### #31 IntendedFor 累积
 
-### #25–#28 CMRR 生理记录（Siemens）
+`move()` 维护 `idList[id] = [已处理的同 id 文件…]`，处理到某个 fmap 时把 `idList["bold"]` 当前的内容写进去。
+处理顺序按 sidecar 排序（AcquisitionTime、SeriesNumber、文件名）。所以：每 run 后跟一个 reverse 的协议，
+fmap_k 指向 bold_1..k；fmap 在 bold 之前采的协议，第一个 fmap 一条都没有（且有 `No id found` WARNING）。
+这不是任何人想要的配对，只能后处理。配对规则必须由人声明（after/before/…），因为「夹在两个 run 中间的 fmap
+属于谁」只有协议设计者知道。
 
-西门子 CMRR 序列的 `Physio recording` 有两种输出模式，**同一个项目里可能混用**，
-两条路径的产物完全不同：
+### #25–#28 CMRR 生理记录
 
-| 模式 | 产物 | 归属方式 | 风险 |
-|---|---|---|---|
-| **DICOM** | `*_PhysioLog` series 混在 DICOM 目录里，`ImageType = ORIGINAL\PRIMARY\RAWDATA\PHYSIO`，单帧 1–19 MB | `SeriesDescription` 直接是 `<task>_run_01_PhysioLog`，**无歧义** | dcm2niix 静默跳过，容易被误判为"没采" |
-| **File** | 独立的 `Physio_<date>_<time>_<uuid>_{Info,PULS,RESP}.log` | 只能靠 `Info.log` 里的 `NumVolumes` 反查对应哪个 run | 文件留在扫描仪本地 log 目录，**漏导就没了**，且会被定期清理 |
+| 模式 | 产物 | 风险 |
+|---|---|---|
+| DICOM | `*_PhysioLog` series 混在 DICOM 目录，`ImageType = ORIGINAL\PRIMARY\RAWDATA\PHYSIO`，单帧 1–19 MB | dcm2niix 静默跳过，易误判「没采」 |
+| File | 独立 `Physio_<date>_<time>_<uuid>_{Info,PULS,RESP}.log` | 留在扫描仪本地 log 目录，漏导就没了，且会被定期清理 |
 
-两种模式的 log 内容格式完全相同（`LogVersion = EJA_1`），所以提取出来后
-可以走同一条转换路径。**DICOM 模式更可靠**，建议在协议里统一成它。
+两种模式的 log 内容相同（`LogVersion = EJA_1`），提取后走同一条路径。
 
-#### 处理流程
+**配对靠时间，不靠名字或帧数**：Info.log 数据行 `VOLUME SLICE ACQ_START_TICS ACQ_FINISH_TICS ECHO`，
+第一个 volume 的 `ACQ_START_TICS × 2.5 ms` = 第一帧时刻（自零点），与 bold sidecar 的 AcquisitionTime 相差 < 1 ms
+（HS7T nezha 实测 3 个 run：14:04:28.543 vs 14:04:28.5425 等）。旧版按 NumVolumes 反查，等长范式（每个 run 帧数相同）
+根本配不了；按目录名里的 run 号，重编号后会配错。
 
-```bash
-# DICOM 模式：先从 CSA Data 提取出 .log
-python3 "$SKILL_DIR/scripts/extract_cmrr_physio_dicom.py" \
-    <dicom_dir> <project>/sourcedata/physio/sub-XX
-
-# File 模式：原样复制到 sourcedata 即可
-cp <physio_dir>/*.log <project>/sourcedata/physio/sub-XX/
-
-# 两种模式都用同一个脚本转 BIDS
-python3 "$SKILL_DIR/scripts/cmrr_physio2bids.py" \
-    <project>/sourcedata/physio/sub-XX <project>/bids/sub-XX/func \
-    --prefix sub-XX_task-<task> \
-    --map 469:01,470:02,382:03 \
-    [--recursive]        # DICOM 模式提取出来按 run 分了子目录时加
-```
-
-`--map` 是 `NumVolumes:run` 映射，从各 bold 的 volume 数得到。
-加 `--recursive` 时脚本会**优先用父目录名里的 run 号**（DICOM 模式权威），
-并与 `NumVolumes` 反查结果**交叉校验**，冲突则跳过并报警。
-
-#### 关键细节
-
-**CSA Data `(7fe1,1010)` 的打包格式**（实测 `MR_VE12U` / `syngo MR E12`）：
-
-```
-块起点 +0      UINT32  dataLen     正文字节数
-块起点 +4      UINT32  nameLen     文件名字节数
-块起点 +8      char[]  filename    Physio_<date>_<time>_<uuid>_<TYPE>.log
-块起点 +1024   char[]  data        log 正文（从 UUID = ... 起）
-下一块起点 = 块起点 + 1024 + dataLen，再向上对齐到 512 字节
-```
-
-正文固定从 **+1024** 开始，不紧跟文件名。解析时不要依赖对齐规则，
-改用正则定位所有文件名偏移、反推块起点（文件名偏移 −8），
-再校验该处的 `nameLen` 与文件名等长（排除正文里的巧合匹配）。
-
-**采样率**：Siemens tick = 2.5 ms。实测 PULS 每 2 tick 一采样（200 Hz），
-RESP 每 8 tick（50 Hz）。因为 BIDS 规定单个 `_physio.tsv.gz` 内所有列
-共享一个 `SamplingFrequency`，必须用 `recording-<label>` 分开存。
-不要为了合并而重采样——会引入插值伪影，而原始保真对 RETROICOR 更重要。
-
-**StartTime**：`(physio 首个采样 tick − Info.log 里首个 volume 的 ACQ_START_TICS) × 2.5ms`。
-正常为负值（生理记录早于第一个 volume 开始）。这个值同时是该协议
-"序列启动到第一个 volume"的实测开销，在同一协议内应当高度稳定
-（HS7T 1.2mm/124 层实测 16 个 run 全为 −50.24 s）。**若各 run 差异很大，
-说明 physio 与 run 的配对出错了**，可以当作校验手段。
-
-**reverse-PE 的 physio 不转**：BIDS 的 fmap 不放 physio。这些组的
-`NumVolumes` 通常是 3，不在 `--map` 里，脚本会自动跳过并列出。
+**StartTime** = (physio 首个采样 tick − 第一帧 tick) × 2.5 ms，负值 = 生理记录先于扫描开始，
+是该协议「序列启动到第一帧」的开销，同协议下稳定（HS7T 1.2mm/124 层全部为 −50.24 s）。
+**某个 run 明显偏离，先怀疑配错了 log**。实例（#43）：旧脚本给 xiju sub-02 run-01 算出 −174.5 s，
+当时被解释成「启动后停了 2 分钟」——实际是把同场 FALL 测试序列（50 帧）的 log 配给了这个 406 帧的 run。
+按时间配对后恢复为 −50.24 s；NumVolumes 与 bold 帧数不等时 physio_to_bids 会报警。

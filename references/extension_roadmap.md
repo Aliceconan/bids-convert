@@ -102,7 +102,7 @@
 - sequence-specific 的复杂性放进模板片段或 reference，而不是塞爆主 README
 - 能通过 `criteria_hint`、`discrimination_hint` 表达的，尽量先用结构化字段表达
 
-如果未来确实需要新的 datatype 分支，也应优先在 `project_config.yaml` 中扩展结构，而不是让所有特殊情况只存在于临时脚本里。
+如果未来确实需要新的 datatype 分支，也应优先在项目声明文件（`project.json` / `protocol.tsv` / `decisions.tsv`）中扩展结构，而不是让所有特殊情况只存在于临时脚本里。
 
 ### 第三优先级：输入与范式扩展
 
@@ -129,8 +129,8 @@
 
 当前已经有：
 
-- `project_config.yaml`
-- `dcm2bids_config_mp2rage.json`
+- `project.json` / `protocol.tsv` / `decisions.tsv`
+- `dcm2bids_config.json` / `dcm2bids_config_mp2rage.json`
 - `decision_log.md`
 
 未来可以继续加，但建议遵守同样的组织方式：
@@ -167,11 +167,13 @@
 
 当前脚本的边界整体是健康的：
 
-- `scout.sh` 负责侦察
-- `convert_parallel.sh` 负责批量转换
-- `validate.py` 负责验证
-- `cleanup_aborted.py` 负责异常清理
-- `copy_auxiliary.sh` 负责辅助数据复制
+- `scout.py` 负责侦察（只读头）
+- `preview.py` 负责转换前预演
+- `convert.py` 负责批量转换（缓存 + dcm2bids）
+- `finalize.py` 负责按声明收拾（run 编号、剔除、fmap 配对）
+- `physio_to_bids.py` 负责生理记录
+- `validate.py` / `init_metadata.py` 负责核对与数据集元数据
+- `copy_sourcedata.py` 负责辅助数据复制
 - `generate_events_template.py` 负责 events 框架
 
 未来扩展时，建议保持这一原则：

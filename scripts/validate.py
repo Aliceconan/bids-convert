@@ -1,335 +1,315 @@
 #!/usr/bin/env python3
 """
-validate.py — 验证 BIDS 转换结果
+validate.py — 转换后核对（bids-validator 之前的项目级检查；bids-validator 查格式，这里查内容）
 
-功能:
-  1. 文件数核对（anat/func/fmap 每个 session）
-  2. Volume 检查（func bold 的 TR 数）
-  3. 检测 tmp 中未匹配的文件
-  4. fmap 的 IntendedFor：是否存在、指向的文件是否存在
+  1. 文件数（anat/func/fmap，每个 session）——给了 --expected-* 才判异常
+  2. bold 帧数：有 protocol.tsv（--project）时逐 run 核对协议位置与帧数；没有协议表只列分布，
+     **不从数据推期望值**（变长范式下「众数/最大值」必然误报，等长范式下也可能把好数据当废片）
+  3. tmp_dcm2bids 里没匹配上的 series
+  4. fmap IntendedFor：存在、目标文件存在、整个数据集写法统一（且与 config 的 bids_uri 一致）
+  5. func sidecar 都有 TaskName（含根目录 task-X_bold.json 继承）
+  6. 没有任何 fmap 指向的 bold（提示）
 
 用法:
-  python3 validate.py <bids_dir> [--expected-anat 7] [--expected-func 7] [--expected-fmap 7]
-  python3 validate.py <bids_dir> --volumes-only
-  python3 validate.py <bids_dir> --check-tmp
-  python3 validate.py <bids_dir> --check-intendedfor
+  python3 validate.py --project <project_dir> [--json --fail-on-anomaly]
+  python3 validate.py <bids_dir> [--expected-anat 3 --expected-func 16 --expected-fmap 8]
+  python3 validate.py <bids_dir> --volumes-only | --check-tmp | --check-intendedfor | --check-taskname
 """
 
 import argparse
 import glob
-import gzip
 import json
 import os
-import struct
+import re
 import sys
 from collections import defaultdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bids_common as bc  # noqa: E402
 
 
 def get_volumes(nii_path):
-    """读取 NIfTI header 获取 volume 数（不依赖 nibabel）"""
-    with gzip.open(nii_path, "rb") as f:
-        hdr = f.read(352)
-    dims = struct.unpack_from("<8h", hdr, 40)
-    return dims[4] if dims[0] >= 4 else 1
+    return bc.nifti_volumes(nii_path)
 
 
 def iter_session_dirs(bids_dir):
-    """遍历所有 session 目录；若无 ses-* 层，则兼容单 session 结构。"""
+    """遍历所有 session 目录；没有 ses-* 层时 session 记为空串。"""
     for sub_dir in sorted(glob.glob(os.path.join(bids_dir, "sub-*"))):
+        if not os.path.isdir(sub_dir):
+            continue
         sub = os.path.basename(sub_dir)
-        ses_dirs = sorted(glob.glob(os.path.join(sub_dir, "ses-*")))
+        ses_dirs = sorted(d for d in glob.glob(os.path.join(sub_dir, "ses-*")) if os.path.isdir(d))
         if ses_dirs:
             for ses_dir in ses_dirs:
                 yield sub, os.path.basename(ses_dir), ses_dir
         else:
-            yield sub, "ses-01", sub_dir
+            yield sub, "", sub_dir
 
 
 def count_files(session_dir):
-    """统计 session 下各 datatype 的 .nii.gz 文件数"""
-    counts = {}
-    for dtype in ["anat", "func", "fmap"]:
-        dtype_dir = os.path.join(session_dir, dtype)
-        if os.path.isdir(dtype_dir):
-            counts[dtype] = len(glob.glob(os.path.join(dtype_dir, "*.nii.gz")))
-        else:
-            counts[dtype] = 0
-    return counts
+    return dict((dt, len(glob.glob(os.path.join(session_dir, dt, "*.nii*"))))
+                for dt in ("anat", "func", "fmap"))
 
 
 def validate_file_counts(bids_dir, expected):
-    """检查每个 session 的文件数是否符合期望"""
-    print("=== 文件数核对 ===\n")
-    anomalies = []
-    sessions = []
-
-    for sub, ses, ses_dir in iter_session_dirs(bids_dir):
-        counts = count_files(ses_dir)
-        sessions.append({"subject": sub, "session": ses, "counts": counts})
-        status = ""
-        for dtype, exp in expected.items():
-            actual = counts.get(dtype, 0)
-            if exp is not None and actual != exp:
-                status += f" {dtype}={actual}(期望{exp})"
-                anomalies.append({
-                    "subject": sub,
-                    "session": ses,
-                    "datatype": dtype,
-                    "actual": actual,
-                    "expected": exp,
-                })
-
-        line = f"  {sub} {ses}: anat={counts['anat']} func={counts['func']} fmap={counts['fmap']}"
-        if status:
-            line += f"  *** 异常:{status}"
-        print(line)
-
-    if anomalies:
-        print(f"\n发现 {len(anomalies)} 个异常")
-    else:
-        print("\n全部正常")
+    print("=== 文件数 ===\n")
+    anomalies, sessions = [], []
+    for sub, ses, d in iter_session_dirs(bids_dir):
+        c = count_files(d)
+        sessions.append({"subject": sub, "session": ses, "counts": c})
+        bad = ["{}={}(期望{})".format(dt, c[dt], e) for dt, e in expected.items()
+               if e is not None and c[dt] != e]
+        for dt, e in expected.items():
+            if e is not None and c[dt] != e:
+                anomalies.append({"subject": sub, "session": ses, "datatype": dt,
+                                  "actual": c[dt], "expected": e})
+        print("  {} {}: anat={} func={} fmap={}{}".format(
+            sub, ses, c["anat"], c["func"], c["fmap"], "  *** " + " ".join(bad) if bad else ""))
+    print("\n" + ("发现 {} 个异常".format(len(anomalies)) if anomalies else "全部正常"))
     return {"sessions": sessions, "anomalies": anomalies}
 
 
-def validate_volumes(bids_dir):
-    """检查所有 bold 文件的 volume 数"""
-    print("=== Volume 检查 ===\n")
-    results = defaultdict(set)
-    runs = []
-
-    # 经 iter_session_dirs 遍历：同时覆盖有 ses-* 层和无 session 层的数据集。
-    # 原来只 glob sub-*/ses-*/func，无 session 布局会扫到 0 个文件却报「一致」
-    files = []
-    for _, _, ses_dir in iter_session_dirs(bids_dir):
-        files += glob.glob(os.path.join(ses_dir, "func", "*bold.nii.gz"))
-    for f in sorted(files):
-        vols = get_volumes(f)
-        name = os.path.basename(f)
-        print(f"  {name}: {vols} vols")
-
-        # 按 task 分组收集 volume 数
-        parts = name.split("_")
-        task = [p for p in parts if p.startswith("task-")]
-        if task:
-            task_name = task[0]
-            results[task_name].add(vols)
-            runs.append({"file": f, "name": name, "task": task_name, "volumes": vols})
-
-    # 汇总每个 task 的 volume 分布
-    print("\n--- 按 task 汇总 ---")
-    anomaly_runs = []
-    for task, vol_set in sorted(results.items()):
-        if len(vol_set) == 1:
-            expected = sorted(vol_set)[0]
-            print(f"  {task}: {expected} vols (一致)")
-        else:
-            expected = max(vol_set)
-            bad = sorted(v for v in vol_set if v != expected)
-            print(f"  {task}: 期望 {expected} vols, 异常值 {bad}")
-            anomaly_runs.append({
-                "task": task,
-                "expected": expected,
-                "observed_outliers": bad,
-            })
-
-    return {"runs": runs, "anomalies": anomaly_runs}
+def validate_volumes(bids_dir, protocol=None):
+    """有协议表：逐 run 核对；没有：只汇报分布。"""
+    print("=== bold 帧数 ===\n")
+    runs, anomalies, warnings = [], [], []
+    dist = defaultdict(lambda: defaultdict(int))
+    for sub, ses, d in iter_session_dirs(bids_dir):
+        present = defaultdict(set)
+        for f in sorted(glob.glob(os.path.join(d, "func", "*_bold.nii*"))):
+            name = os.path.basename(f)
+            ents, _ = bc.parse_name(bc.split_image(name)[0])
+            task = ents.get("task", "")
+            vols = get_volumes(f)
+            run = int(ents["run"]) if ents.get("run", "").isdigit() else None
+            runs.append({"file": f, "name": name, "task": "task-" + task, "run": run, "volumes": vols})
+            dist[task][vols] += 1
+            if protocol is None:
+                continue
+            if task not in protocol:
+                anomalies.append({"file": name, "problem": "protocol.tsv 没有 task-{}".format(task)})
+                continue
+            spec_runs = protocol[task]
+            key = run if run is not None else (1 if len(spec_runs) == 1 else None)
+            if key is None or key not in spec_runs:
+                anomalies.append({"file": name, "problem": "run {} 不在协议表里".format(run)})
+                print("  {}: {} vol  *** run 不在协议表里".format(name, vols))
+                continue
+            present[task].add(key)
+            want, tol = spec_runs[key]
+            if abs(vols - want) > tol:
+                anomalies.append({"file": name, "problem": "{} vol，协议 {}±{}".format(vols, want, tol),
+                                  "volumes": vols, "expected": want})
+                print("  {}: {} vol  *** 协议 {}±{}（若是记录在案的例外，忽略）".format(name, vols, want, tol))
+        if protocol:
+            for task, got in present.items():
+                miss = sorted(set(protocol[task]) - got)
+                if miss:
+                    warnings.append("{} {} task-{} 缺 run {}".format(sub, ses, task, miss))
+    print("--- 分布 ---")
+    for task, dd in sorted(dist.items()):
+        print("  task-{}: ".format(task) + ", ".join("{} vol ×{}".format(v, n) for v, n in sorted(dd.items())))
+    if protocol is None:
+        print("  （没有协议表，不判异常。用 --project 读 code/protocol.tsv）")
+    for w in warnings:
+        print("  [warn] " + w)
+    print("\n" + ("发现 {} 个异常".format(len(anomalies)) if anomalies else "未发现异常"))
+    return {"runs": runs, "anomalies": anomalies, "warnings": warnings}
 
 
 def check_tmp(bids_dir):
-    """检查 tmp_dcm2bids 中是否有未匹配的文件"""
     tmp_dir = os.path.join(bids_dir, "tmp_dcm2bids")
+    print("=== tmp 里未匹配的 series ===\n")
     if not os.path.isdir(tmp_dir):
-        print("=== tmp 检查 ===\n  tmp_dcm2bids 不存在（已清理）")
+        print("  tmp_dcm2bids 不存在")
         return {"sessions": [], "unmatched": []}
-
-    print("=== tmp 未匹配文件 ===\n")
-    unmatched = []
-    session_reports = []
-
+    unmatched, reports = [], []
     for ses_dir in sorted(glob.glob(os.path.join(tmp_dir, "*"))):
         if not os.path.isdir(ses_dir) or os.path.basename(ses_dir) == "log":
             continue
-        jsons = sorted(glob.glob(os.path.join(ses_dir, "*.json")))
-        ses_name = os.path.basename(ses_dir)
-
-        # 忽略 localizer 和 b1map（这些通常不纳入 BIDS）
         meaningful = []
-        for j in jsons:
+        for j in sorted(glob.glob(os.path.join(ses_dir, "*.json"))):
             try:
-                d = json.load(open(j))
-                sd = d.get("SeriesDescription", "")
-                # 跳过常见的非目标序列
-                if any(skip in sd.lower() for skip in ["localizer", "b1map", "scout"]):
-                    continue
-                meaningful.append((os.path.basename(j), sd))
-            except Exception:
+                sd = json.load(open(j)).get("SeriesDescription", "")
+            except ValueError:
                 continue
-
+            if any(k in sd.lower() for k in ("localizer", "scout", "b1map", "physiolog")):
+                continue
+            meaningful.append((os.path.basename(j), sd))
         if meaningful:
-            print(f"  {ses_name}: {len(meaningful)} 个未匹配文件")
-            for name, sd in meaningful:
-                print(f"    {sd}")
-            session_reports.append({
-                "session_tmp": ses_name,
-                "count": len(meaningful),
-                "series": [{"file": name, "series_description": sd} for name, sd in meaningful],
-            })
+            print("  {}: {} 个".format(os.path.basename(ses_dir), len(meaningful)))
+            for _, sd in meaningful:
+                print("    " + sd)
+            reports.append({"session_tmp": os.path.basename(ses_dir), "count": len(meaningful),
+                            "series": [{"file": n, "series_description": s} for n, s in meaningful]})
             unmatched.extend(meaningful)
-
     if not unmatched:
-        print("  无有意义的未匹配文件")
-    return {"sessions": session_reports, "unmatched": unmatched}
+        print("  无")
+    print("  （SBRef of reverse-PE、测试序列等本来就不进 BIDS 的会出现在这里，逐个确认即可）")
+    return {"sessions": reports, "unmatched": unmatched}
 
 
 def resolve_intended(bids_dir, sub_dir, target):
-    """IntendedFor 条目 → 磁盘路径。支持 BIDS URI（bids::sub-XX/...）和
-    相对 subject 目录的旧写法（ses-YY/func/... 或 func/...）。"""
     if target.startswith("bids::"):
         return os.path.join(bids_dir, target[len("bids::"):])
     return os.path.join(sub_dir, target)
 
 
-def check_intendedfor(bids_dir):
-    """每个 fmap sidecar 都要有非空 IntendedFor，且每个目标文件都存在。
-
-    dcm2bids 3.x 对 config 里写错位置的 intended_for 静默忽略（pitfalls #29），
-    转完不会有任何报错；只有在这里查产物才发现得了。
-    """
-    print("=== fmap IntendedFor 检查 ===\n")
-    anomalies, fmaps = [], []
-    for sub, ses, ses_dir in iter_session_dirs(bids_dir):
+def check_intendedfor(bids_dir, style=None):
+    """每个 fmap 都有非空 IntendedFor、目标都存在、写法统一。返回含 targeted（被指向的 bold）。"""
+    print("=== fmap IntendedFor ===\n")
+    anomalies, fmaps, styles, targeted = [], [], defaultdict(int), set()
+    for sub, ses, d in iter_session_dirs(bids_dir):
         sub_dir = os.path.join(bids_dir, sub)
-        for j in sorted(glob.glob(os.path.join(ses_dir, "fmap", "*.json"))):
+        for j in sorted(glob.glob(os.path.join(d, "fmap", "*.json"))):
             name = os.path.basename(j)
             try:
-                d = json.load(open(j))
-            except Exception as e:                                # noqa: BLE001
-                anomalies.append({"fmap": name, "problem": f"json 读取失败: {e}"})
+                meta = json.load(open(j))
+            except ValueError as e:
+                anomalies.append({"fmap": name, "problem": "json 读取失败: {}".format(e)})
                 continue
-            ifor = d.get("IntendedFor")
+            ifor = meta.get("IntendedFor")
             targets = [] if ifor is None else ([ifor] if isinstance(ifor, str) else list(ifor))
-            missing = [t for t in targets
-                       if not os.path.exists(resolve_intended(bids_dir, sub_dir, t))]
+            missing = [t for t in targets if not os.path.exists(resolve_intended(bids_dir, sub_dir, t))]
+            for t in targets:
+                styles["URI" if t.startswith("bids::") else "relative"] += 1
+                targeted.add(os.path.normpath(resolve_intended(bids_dir, sub_dir, t)))
             fmaps.append({"subject": sub, "session": ses, "fmap": name,
                           "n_targets": len(targets), "missing_targets": missing})
             if not targets:
-                anomalies.append({"subject": sub, "session": ses, "fmap": name,
-                                  "problem": "没有 IntendedFor"})
-                print(f"  {name}: *** 没有 IntendedFor")
+                anomalies.append({"subject": sub, "session": ses, "fmap": name, "problem": "没有 IntendedFor"})
+                print("  {}: *** 没有 IntendedFor".format(name))
             elif missing:
                 anomalies.append({"subject": sub, "session": ses, "fmap": name,
-                                  "problem": f"{len(missing)} 个目标不存在", "missing": missing})
-                print(f"  {name}: {len(targets)} 个目标，*** {len(missing)} 个不存在: {missing[:2]}")
-            else:
-                print(f"  {name}: {len(targets)} 个目标")
+                                  "problem": "{} 个目标不存在".format(len(missing)), "missing": missing})
+                print("  {}: *** {} 个目标不存在: {}".format(name, len(missing), missing[:2]))
+    if len(styles) > 1:
+        anomalies.append({"problem": "IntendedFor 写法混用：{}".format(dict(styles))})
+        print("  *** 写法混用 {} —— 同一数据集应统一（自己写的脚本拼路径时会踩坑）".format(dict(styles)))
+    elif style and styles and list(styles)[0] != style:
+        anomalies.append({"problem": "IntendedFor 写法是 {}，config 声明 bids_uri={}".format(list(styles)[0], style)})
+        print("  *** 写法 {} 与 config 的 bids_uri={} 不一致".format(list(styles)[0], style))
     if not fmaps:
-        print("  没有 fmap sidecar")
+        print("  没有 fmap")
     elif anomalies:
-        n_none = sum(a["problem"] == "没有 IntendedFor" for a in anomalies)
-        print(f"\n发现 {len(anomalies)} 个异常")
-        if n_none == len(fmaps):
-            print("  全部 fmap 都没有 IntendedFor —— 多半是 config 用了顶层 intended_for，"
-                  "dcm2bids 3.x 会静默忽略。跑 scripts/lint_config.py 检查（pitfalls #29）")
+        print("\n发现 {} 个异常".format(len(anomalies)))
+        if sum(a.get("problem") == "没有 IntendedFor" for a in anomalies) == len(fmaps):
+            print("  全部 fmap 都没有 IntendedFor —— 多半是 config 用了顶层 intended_for（dcm2bids 3.x 静默忽略），"
+                  "或 project.json 的 fmap_pairing=none")
     else:
-        print("\n全部正常")
-    return {"fmaps": fmaps, "anomalies": anomalies}
+        print("{} 个 fmap 全部正常（写法 {}）".format(len(fmaps), "/".join(styles) or "-"))
+    return {"fmaps": fmaps, "anomalies": anomalies, "targeted": sorted(targeted)}
 
 
-def build_summary(file_counts, volumes, tmp_report, ifor_report=None):
-    return {
-        "file_count_anomalies": len(file_counts["anomalies"]),
-        "volume_anomalies": len(volumes["anomalies"]),
-        "tmp_unmatched": len(tmp_report["unmatched"]),
-        "intendedfor_anomalies": len(ifor_report["anomalies"]) if ifor_report else 0,
-        "sessions_checked": len(file_counts["sessions"]),
-        "bold_runs_checked": len(volumes["runs"]),
-    }
+def check_taskname(bids_dir):
+    print("=== TaskName ===\n")
+    inherited = {}
+    for p in glob.glob(os.path.join(bids_dir, "task-*_bold.json")):
+        m = re.match(r"task-([^_]+)_", os.path.basename(p))
+        try:
+            if m and json.load(open(p)).get("TaskName"):
+                inherited[m.group(1)] = json.load(open(p))["TaskName"]
+        except ValueError:
+            pass
+    anomalies = []
+    n = 0
+    for sub, ses, d in iter_session_dirs(bids_dir):
+        for j in sorted(glob.glob(os.path.join(d, "func", "*.json"))):
+            name = os.path.basename(j)
+            if "_physio" in name or "_events" in name:
+                continue
+            ents, suffix = bc.parse_name(name[: -len(".json")])
+            if suffix not in ("bold", "sbref", "cbv", "phase"):
+                continue
+            n += 1
+            tn = json.load(open(j)).get("TaskName") or inherited.get(ents.get("task"))
+            if not tn:
+                anomalies.append({"file": name, "problem": "缺 TaskName"})
+            elif tn != ents.get("task"):
+                anomalies.append({"file": name, "problem": "TaskName={!r} ≠ task-{}".format(tn, ents.get("task"))})
+    if anomalies:
+        print("  {} / {} 个 func sidecar 有问题，例如 {}".format(len(anomalies), n, anomalies[0]))
+        print("  （config 的 func 条目在 sidecar_changes 里写 TaskName；finalize.py 也会补）")
+    else:
+        print("  {} 个 func sidecar 都有 TaskName".format(n))
+    return {"anomalies": anomalies}
+
+
+def bolds_without_fmap(bids_dir, targeted):
+    out = []
+    for sub, ses, d in iter_session_dirs(bids_dir):
+        if not glob.glob(os.path.join(d, "fmap", "*.json")):
+            continue
+        for f in sorted(glob.glob(os.path.join(d, "func", "*_bold.nii*"))):
+            if os.path.normpath(f) not in targeted:
+                out.append(os.path.basename(f))
+    if out:
+        print("\n[提示] {} 个 bold 没有任何 fmap 指向：{}".format(len(out), out[:5]))
+    return out
 
 
 def main():
-    parser = argparse.ArgumentParser(description="验证 BIDS 转换结果")
-    parser.add_argument("bids_dir", help="BIDS 输出目录")
-    parser.add_argument("--expected-anat", type=int, default=None, help="期望的 anat 文件数")
-    parser.add_argument("--expected-func", type=int, default=None, help="期望的 func 文件数")
-    parser.add_argument("--expected-fmap", type=int, default=None, help="期望的 fmap 文件数")
-    parser.add_argument("--volumes-only", action="store_true", help="只检查 volumes")
-    parser.add_argument("--check-tmp", action="store_true", help="只检查 tmp 未匹配文件")
-    parser.add_argument("--check-intendedfor", action="store_true",
-                        help="只检查 fmap 的 IntendedFor 是否存在、目标是否存在")
-    parser.add_argument("--json", action="store_true", help="输出 JSON 摘要到 stdout")
-    parser.add_argument("--fail-on-anomaly", action="store_true",
-                        help="发现任何异常时返回退出码 1")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="转换后核对")
+    ap.add_argument("bids_dir", nargs="?")
+    ap.add_argument("--project", help="项目目录：读 protocol.tsv、config 的 bids_uri、bids_dir")
+    ap.add_argument("--expected-anat", type=int)
+    ap.add_argument("--expected-func", type=int)
+    ap.add_argument("--expected-fmap", type=int)
+    ap.add_argument("--volumes-only", action="store_true")
+    ap.add_argument("--check-tmp", action="store_true")
+    ap.add_argument("--check-intendedfor", action="store_true")
+    ap.add_argument("--check-taskname", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--fail-on-anomaly", action="store_true")
+    a = ap.parse_args()
 
-    if args.volumes_only:
-        volumes = validate_volumes(args.bids_dir)
-        summary = {
-            "file_count_anomalies": 0,
-            "volume_anomalies": len(volumes["anomalies"]),
-            "tmp_unmatched": 0,
-            "sessions_checked": 0,
-            "bold_runs_checked": len(volumes["runs"]),
-        }
-        if args.json:
-            print(json.dumps({"summary": summary, "volumes": volumes}, ensure_ascii=False, indent=2))
-        if args.fail_on_anomaly and summary["volume_anomalies"] > 0:
-            sys.exit(1)
-        return
+    protocol, style, bids_dir = None, None, a.bids_dir
+    if a.project:
+        try:
+            spec = bc.load_project(a.project)
+            protocol = bc.load_protocol(spec) or None
+            style = bc.load_config(spec).get("bids_uri", "URI")
+        except bc.SpecError as e:
+            sys.exit("错误：{}".format(e))
+        bids_dir = bids_dir or str(spec["bids_dir"])
+    if not bids_dir:
+        sys.exit("给 bids_dir 或 --project")
 
-    if args.check_tmp:
-        tmp_report = check_tmp(args.bids_dir)
-        summary = {
-            "file_count_anomalies": 0,
-            "volume_anomalies": 0,
-            "tmp_unmatched": len(tmp_report["unmatched"]),
-            "sessions_checked": 0,
-            "bold_runs_checked": 0,
-        }
-        if args.json:
-            print(json.dumps({"summary": summary, "tmp": tmp_report}, ensure_ascii=False, indent=2))
-        if args.fail_on_anomaly and summary["tmp_unmatched"] > 0:
-            sys.exit(1)
-        return
-
-    if args.check_intendedfor:
-        ifor = check_intendedfor(args.bids_dir)
-        if args.json:
-            print(json.dumps({"summary": {"intendedfor_anomalies": len(ifor["anomalies"])},
-                              "intendedfor": ifor}, ensure_ascii=False, indent=2))
-        if args.fail_on_anomaly and ifor["anomalies"]:
-            sys.exit(1)
-        return
-
-    # 完整验证
-    expected = {
-        "anat": args.expected_anat,
-        "func": args.expected_func,
-        "fmap": args.expected_fmap,
-    }
-    file_counts = validate_file_counts(args.bids_dir, expected)
-    print()
-    volumes = validate_volumes(args.bids_dir)
-    print()
-    tmp_report = check_tmp(args.bids_dir)
-    print()
-    ifor_report = check_intendedfor(args.bids_dir)
-
-    summary = build_summary(file_counts, volumes, tmp_report, ifor_report)
-    if args.json:
-        payload = {
-            "summary": summary,
-            "file_counts": file_counts,
-            "volumes": volumes,
-            "tmp": tmp_report,
-            "intendedfor": ifor_report,
-        }
+    payload = {}
+    single = a.volumes_only or a.check_tmp or a.check_intendedfor or a.check_taskname
+    if not single or a.volumes_only:
+        payload["volumes"] = validate_volumes(bids_dir, protocol)
         print()
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if not single or a.check_tmp:
+        payload["tmp"] = check_tmp(bids_dir)
+        print()
+    if not single or a.check_intendedfor:
+        payload["intendedfor"] = check_intendedfor(bids_dir, style)
+        print()
+    if not single or a.check_taskname:
+        payload["taskname"] = check_taskname(bids_dir)
+        print()
+    if not single:
+        payload["file_counts"] = validate_file_counts(
+            bids_dir, {"anat": a.expected_anat, "func": a.expected_func, "fmap": a.expected_fmap})
+        payload["bolds_without_fmap"] = bolds_without_fmap(bids_dir, set(payload["intendedfor"]["targeted"]))
 
-    if args.fail_on_anomaly and any(summary[key] > 0 for key in [
-        "file_count_anomalies", "volume_anomalies", "tmp_unmatched",
-        "intendedfor_anomalies",
-    ]):
+    summary = {
+        "file_count_anomalies": len(payload.get("file_counts", {}).get("anomalies", [])),
+        "volume_anomalies": len(payload.get("volumes", {}).get("anomalies", [])),
+        "tmp_unmatched": len(payload.get("tmp", {}).get("unmatched", [])),
+        "intendedfor_anomalies": len(payload.get("intendedfor", {}).get("anomalies", [])),
+        "taskname_anomalies": len(payload.get("taskname", {}).get("anomalies", [])),
+        "bold_runs_checked": len(payload.get("volumes", {}).get("runs", [])),
+    }
+    if a.json:
+        payload["summary"] = summary
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    # tmp 里本来就有不进 BIDS 的 series，不算失败
+    bad = [k for k in ("file_count_anomalies", "volume_anomalies", "intendedfor_anomalies",
+                       "taskname_anomalies") if summary[k]]
+    if a.fail_on_anomaly and bad:
         sys.exit(1)
 
 

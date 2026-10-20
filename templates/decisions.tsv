@@ -1,0 +1,4 @@
+participant_id	session	action	target	value	reason
+# action: discard / assign / volumes / pair / anat_duplicates / fmap_pairing / unmatched_func / unpaired_fmap / note
+# target 选择器: sn=5,6,7 | sd=*TEST* | time=13:41:07 | run=3 | task=x，可用 & 组合；session 留空 = 该被试所有 session
+# 每行都要写 reason（为什么这样决定）

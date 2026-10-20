@@ -1,0 +1,36 @@
+{
+  "case_sensitive": false,
+  "bids_uri": "URI",
+  "descriptions": [
+    {
+      "id": "t1w",
+      "datatype": "anat",
+      "suffix": "T1w",
+      "criteria": {"SeriesDescription": "*mprage*"}
+    },
+    {
+      "id": "bold",
+      "datatype": "func",
+      "suffix": "bold",
+      "custom_entities": "task-TASKNAME",
+      "criteria": {"SeriesDescription": "TASKNAME_run_??"},
+      "sidecar_changes": {"TaskName": "TASKNAME"}
+    },
+    {
+      "id": "sbref",
+      "datatype": "func",
+      "suffix": "sbref",
+      "custom_entities": "task-TASKNAME",
+      "criteria": {"SeriesDescription": "TASKNAME_run_??_SBRef"},
+      "sidecar_changes": {"TaskName": "TASKNAME"}
+    },
+    {
+      "id": "fmap_pa",
+      "datatype": "fmap",
+      "suffix": "epi",
+      "custom_entities": "dir-PA",
+      "criteria": {"SeriesDescription": "reverse_PE_??", "PhaseEncodingDirection": "j"},
+      "sidecar_changes": {"IntendedFor": ["bold"]}
+    }
+  ]
+}

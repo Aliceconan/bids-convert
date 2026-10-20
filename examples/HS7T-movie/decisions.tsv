@@ -1,0 +1,4 @@
+participant_id	session	action	target	value	reason
+sub-01		volumes	run=1	470	扫描记录：run-01 实际 470 TR（计划 464），是现场记录而非异常
+sub-01		fmap_pairing		nearest	首场协议未定型：只有 2 个 reverse-PE 对 7 个 run，按时间就近
+sub-07		note			只扫了 run-01 后终止；按用户决定仍转入（缺 run 2-7）

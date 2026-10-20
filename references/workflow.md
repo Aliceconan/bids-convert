@@ -1,368 +1,218 @@
-# bids-convert 各步骤详细规范
+# bids-convert 各步骤细节
 
-SKILL.md 只列命令和决策点；执行某一步遇到细节问题（匹配规则、重跑、清理、physio、events、validator）时读这里对应小节。
-
+SKILL.md 只列命令和决策点；执行某一步遇到细节问题时读这里对应小节。
+项目声明文件的格式见 `project_spec.md`。
 
 ### [1] 初始化
 
 ```bash
-mkdir -p "$PROJECT_DIR/code" "$PROJECT_DIR/bids"
-cp "$SKILL_DIR/templates/project_config.yaml" "$PROJECT_DIR/code/project_config.yaml"
-cp "$SKILL_DIR/templates/decision_log.md" "$PROJECT_DIR/code/decision_log.md"
+mkdir -p "$PROJECT_DIR/code"
+cp "$SKILL_DIR"/templates/{project.json,protocol.tsv,decisions.tsv,dcm2bids_config.json,decision_log.md} "$PROJECT_DIR/code/"
 ```
+
+`participants_mapping.tsv` 手写（或按 DICOM 目录名用脚本生成后人工核对）：至少
+`participant_id` + `dicom_dir`，多 session 加 `session`，有生理记录加 `physio_mode`。
+被试编号优先沿用扫描系统/招募记录里的原始编号（缺号就缺着，不重排），方便与行为数据对照。
 
 ### [2] 侦察
 
-**关键原则：选被试必须覆盖不同时期（尤其是最早期），至少 2-3 个不同日期。** 最早期被试命名与后期完全不同是常态（4/4 项目）。
+```bash
+# 已有 mapping
+<pyt-python> "$SKILL_DIR/scripts/scout.py" "$PROJECT_DIR" [-j 16]
+# 还没写 mapping：直接给目录
+<pyt-python> "$SKILL_DIR/scripts/scout.py" --dirs /raw/2026*_X_S0{1,2} --out "$PROJECT_DIR/work/scout"
+```
+
+每个 session 一张表（SN、文件数、采集时间、PE、层厚、SeriesDescription、ImageType），最后是**跨 session 汇总**：
+同一 SeriesDescription（忽略大小写）出现在几个 session、文件数分布、写法变体、PE。怎么看：
+
+- **写法变体**：早期 session 的命名常与后期完全不同（实测 4/4 项目；HS7T 有 3 套）。必须覆盖最早日期。
+- **mosaic EPI 的文件数 = volume 数**：同一 run 名在各 session 的文件数应一致——这就是 protocol.tsv 的来源之一
+  （以扫描协议表为准，侦察结果用来核对）。偏少的是中断的 run。
+- **PE 方向**：序列名里的 AP/PA 字样不可信（HS7T 有同 PE 值、名字相反的情况），只信 `pe=` 列。
+  fmap 与 bold 的 PE 应相反；协议中途改过 PE 方向时，config 的 fmap 条目按 `PhaseEncodingDirection` 区分 dir。
+- **同名不同协议**：测试序列可能与正式序列同名（HS7T：0.9mm 测试的 reverse 也叫 `reverse_PE_01`），
+  看 `th=`（层厚）等字段找区分依据。
+- **SN 撞号**：扫描仪软件中途重启后 SeriesNumber 从 1 重来。scout 按 SeriesInstanceUID 归组，不受影响；
+  写 decisions 时用 `sn=…&time=…` 区分。
+- `PhysioLog` 计数 > 0 → 该 session `physio_mode=dicom`。
+
+### [3] 交互确认（⏸）
+
+只问会阻塞下一步的最小集合：
+
+| 事项 | 为什么必须问 |
+|---|---|
+| 被试编号方式、排除谁 | 影响 mapping |
+| **fmap 配对规则**（after/before/nearest/…） | 「fmap 夹在两个 run 中间」时只有协议设计者知道它属于谁；`project.json` 必填 |
+| 重复结构像保留哪套 | 只有现场记录知道哪套好；`anat_duplicates` 默认 ask |
+| 对不上协议表的 bold 是否一律丢 | 默认 ask；用户确认「中断的 run 都不要」后可设 `unmatched_func=discard` |
+| 协议帧数的来源 | 要协议表，不要从数据推 |
+| 范式文档 | events.tsv 需要 |
+
+展示侦察里的命名变体让用户确认。用户的每个回答落到 project.json 或 decisions.tsv，并在 decision_log 记原因。
+
+### [4] 写声明
+
+见 `project_spec.md`。写完 config 先 lint：
 
 ```bash
-# 列出所有 session 按日期排序，选最早、中间、最晚各一个
-ls -d "$PROJECT_DIR"/YYYYMMDD_* | sort
-
-# 对选定的 session 运行侦察
-bash "$SKILL_DIR/scripts/scout.sh" <session_folder> /tmp/scout_<name>
+python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json"        # 检查
+python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json" --fix  # 改写 intended_for、补 TaskName/bids_uri/case_sensitive
 ```
 
-侦察输出：一张 SeriesDescription 变体清单，按大小写不敏感分组。
+MP2RAGE 条目从 `templates/dcm2bids_config_mp2rage.json` 挑。
 
-**侦察结果异常时：**
-- 未找到 sidecar JSON → 检查 DICOM 目录路径，确认 `dcm2bids_helper` 是否正常运行
-- 跨 session 序列名差异很大 → 扩大侦察范围，覆盖更多时期；在 [3] 向用户展示所有变体后再确认
-- 某序列只在少数 session 出现 → 确认是否为可选扫描，config 中按需匹配
-
-### [3] 交互确认
-
-必须主动向用户确认以下事项（不要默认假设）：
-
-| 事项 | 默认值 |
-|------|--------|
-| 被试编号方式 | 有原始编号则用原始，否则按日期 |
-| 被试排除 | 无排除 |
-| 重复结构像保留策略 | 无默认，**必须问** |
-| 刺激范式文档 | 主动索要（生成 events.tsv 所需） |
-| 序列名变体确认 | 展示给用户确认 |
-
-只询问会阻塞下一步的最小问题集。
-
-### [4] 生成配置
-
-#### dcm2bids_config.json
-
-```json
-{
-  "descriptions": [
-    {
-      "id": "<unique_id>",
-      "datatype": "anat|func|fmap",
-      "suffix": "<bids_suffix>",
-      "custom_entities": "<bids_entities>",
-      "criteria": {
-        "SeriesDescription": { "any": ["pattern1", "Pattern1", "PATTERN1"] },
-        "PhaseEncodingDirection": "j-"
-      },
-      "sidecar_changes": {"IntendedFor": ["<other_id>"]}
-    }
-  ]
-}
-```
-
-⚠ **IntendedFor 只能写在 `sidecar_changes` 里。** dcm2bids 3.x 把 description
-的其它键全部塞进 `Acquisition(**kwargs)` 吞掉，顶层 `"intended_for"` / `"intendedFor"`
-（旧写法）**不报错、不警告、不生效**，转完所有 fmap 都没有 IntendedFor（实测 3.2.0，
-pitfalls #29）。写完 config 先跑：
+### [5] 预演
 
 ```bash
-python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json"
-# 发现旧写法可自动改（只替换那一行，保留原格式）
-python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json" --fix
+python3 "$SKILL_DIR/scripts/preview.py" "$PROJECT_DIR" [--only sub-01] [--show-all]
 ```
 
-`convert_parallel.sh` 开跑前也会自动跑一遍，有 error 直接停。
+用 scout 的 sidecar + 只有头的占位 NIfTI（mosaic 的 volume 数 = 文件数）喂给**真正的 dcm2bids**，
+再对结果跑 finalize 计划。每个 session 输出：
 
-**SeriesDescription 匹配规则：**
-- `dcm2bids` 使用 Python `fnmatch`，**区分大小写**
-- 必须用 `any` 列出所有大小写变体
-- `*` 匹配任意字符序列，`?` 匹配单字符
-- 当 SeriesDescription 不足以区分时，结合 `PhaseEncodingDirection` 或 `ImageType`
+- 每个 series → 目标文件名 / 「不进 BIDS」/ 「!! 同时匹配多条规则」
+- finalize 计划：剔除、改名、IntendedFor、警告、**需要决定**的事项
 
-MP2RAGE 配置可从 `templates/dcm2bids_config_mp2rage.json` 选取需要的条目。
+循环：有事项 → 问用户 → 写 decisions.tsv / 改 config / 改 project.json → 再预演，直到汇总全是「可以转换」。
+几秒一个 session，比转完再返工便宜得多。局限：非 mosaic 多文件 EPI 推不出 volume 数（按 3D 处理）。
 
-#### participants_mapping.tsv
-
-```
-participant_id	session	dicom_folder
-sub-01	ses-pre	20210301_S18_TASK_S01_PRE
-sub-01	ses-post	20210401_S18_TASK_S01_POST
-```
-
-不包含任何隐私信息（姓名、年龄、original_id 等）。
-
-### [5] 并行转换
-
-**必须并行，不要串行。**
+### [6] 转换
 
 ```bash
-# 全量首次转换
-bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR"
-
-# 选择性重跑（自动清理旧输出 + 复用 tmp 中的 NIfTI）
-bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR" \
-  --rerun sub-01 ses-pre sub-03 ses-pre
-
-# 如果 dcm2niix 版本更新，需要从 DICOM 完全重新转换
-bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR" --force
+python3 "$SKILL_DIR/scripts/convert.py" "$PROJECT_DIR"                    # 全部
+python3 "$SKILL_DIR/scripts/convert.py" "$PROJECT_DIR" --only sub-03 sub-05:ses-post
+python3 "$SKILL_DIR/scripts/convert.py" "$PROJECT_DIR" --refresh-cache    # 换了 dcm2niix 或改了 dcm2niixOptions
 ```
 
-修改 config 后重跑时**必须先清理该 session 的 BIDS 输出**，否则旧文件残留。详见 pitfalls #8。
+每个 session：
 
-**转换失败时：**
-- 单个 session 失败 → 检查 `$PROJECT_DIR/code/logs/dcm2bids_<sub>_<ses>.log`
-- tmp 中有 NIfTI 但 BIDS 下无对应输出 → config 未匹配到该序列，检查 SeriesDescription 大小写和通配符
-- 多个 session 均失败 → 优先检查 config.json 格式（JSON 语法错误会导致全部失败）
+1. **dcm2niix 缓存** `work/dcm2niix/<sub[_ses]>/`。`.complete` 标记记录 DICOM 路径、dcm2niix 版本、参数，
+   任一变化自动重建；否则复用（重跑只需几十秒到几分钟）。
+2. 删掉该 session 旧的 BIDS 输出和 dcm2bids tmp，把缓存**硬链接**进 `bids/tmp_dcm2bids/<sub[_ses]>/`，
+   调 dcm2bids（不加 `--force_dcm2bids`：它看到 tmp 非空就跳过 dcm2niix）。
+3. 检查：有产出、没有 Several Pairing。
+4. `finalize`（按协议分配 run、剔除、fmap 配对、TaskName）。有待决事项 → 状态 `needs_decision`，
+   该 session 停在 dcm2bids 原始输出，不做任何收拾。
+5. `physio_mode` 为 dicom/file 时转生理记录。
 
-### [6] 验证
+为什么这样设计（都是踩过的坑，见 pitfalls #8、#30）：
+- dcm2bids 匹配成功后把 NIfTI 从 tmp **移走**。旧做法「删 BIDS 输出 + 不加 force 重跑」实测**产出为空、退出码 0**。
+- 硬链接不占额外空间；dcm2bids 的 `rename`/`remove` 只动 tmp 里的那个链接，缓存不受影响。
+  不要用会**原地修改** NIfTI 的工具（dcm2bids `post_op` 原地改写）——硬链接下会连缓存一起改；需要时设 `cache_mode: copy`。
+
+结束时打印每个 session 的状态（`ok` / `needs_decision` / `failed`）、待决事项和警告，明细写 `code/logs/convert_<时间>.json`，
+每个 session 的完整日志在 `code/logs/<sub[_ses]>.log`。退出码 0/2/1 对应全部完成/有待决/有失败。
+
+**剔除的文件**移到 `work/discarded/<sub[_ses]>/<时间戳>/`，附 `REASONS.tsv`（重转该 session 时旧的会被清掉，因为能从缓存重新产生）；每次 finalize 的动作记录在
+`work/finalize/<sub[_ses]>_<时间戳>.json`。
+
+单独重跑收拾步骤（不重转）：`python3 "$SKILL_DIR/scripts/finalize.py" "$PROJECT_DIR" --only sub-01 [--apply]`。
+它可重复执行；但已经剔除的文件不会回来——改了决定要恢复被剔除的文件，就对该 session 重跑 convert.py。
+
+### [7] 核对
 
 ```bash
-# 完整验证：文件数 + volume + tmp 未匹配
-python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" \
-  --expected-anat 7 --expected-func 7 --expected-fmap 7
-
-# 供 agent / CI 消费的结构化输出；发现异常则退出 1
-python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" \
-  --expected-anat 7 --expected-func 7 --expected-fmap 7 \
-  --json --fail-on-anomaly
-
-# 仅 volume 检查
-python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --volumes-only
-
-# 仅检查 tmp 未匹配
-python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --check-tmp
-
-# 仅检查 fmap IntendedFor：每个 fmap 都要有，且指向的文件存在（BIDS URI 与相对路径都认）
-python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" --check-intendedfor
+python3 "$SKILL_DIR/scripts/validate.py" --project "$PROJECT_DIR" [--expected-anat 3] [--json --fail-on-anomaly]
 ```
 
-完整验证默认包含 IntendedFor 检查，异常计入 `--fail-on-anomaly`。
-**全部 fmap 都没有 IntendedFor** 几乎一定是 config 写成了顶层 `intended_for`：
-用 `lint_config.py --fix` 改 config，再 `convert_parallel.sh --rerun` 重跑
-（tmp 里的 NIfTI 可复用，不用重跑 dcm2niix）。
+| 检查 | 异常时 |
+|---|---|
+| bold 帧数对 protocol.tsv（run 号 = 协议位置） | 协议表错，或该 session 确有例外（decisions `volumes`） |
+| 缺 run（warn） | 确认是缺扫；记 decision_log |
+| tmp 里未匹配的 series | 逐个确认：reverse-PE 的 SBRef、测试序列、报告等本来就不进；该进的去改 config |
+| IntendedFor：存在、目标存在、全数据集写法统一且等于 config 的 `bids_uri` | 见 SKILL.md 异常表 |
+| func sidecar 都有 TaskName | config 补 `sidecar_changes.TaskName` |
+| 没有 fmap 指向的 bold（提示） | 配对规则不对，或那个 run 确实没扫 fmap |
 
-**验证异常的处理路径：**
-- 文件数低于期望 → 跑 `--check-tmp` 确认 tmp 中是否有未匹配 NIfTI → 更新 config → 重跑受影响 session
-- 文件数高于期望 → 通常是重复结构像（见 7b）或 config 多匹配了序列
-- volume 数异常低 → aborted run（见 7a）
-- volume 数异常高 → config 可能把多个序列匹配成了一个条目
-
-### [7] 后处理
-
-#### 7a. Aborted run 清理
-
-4/4 项目有 aborted run。判定标准：volume 数显著低于期望值（如 1 vol、或 < 50% 期望值）。
-
-**先判断范式是等长还是变长，选错脚本会删掉好数据。**
-
-| 范式 | 特征 | 用哪个 |
-|---|---|---|
-| **等长** | 同 task 所有 run 一样长（固定时长的 block/event 设计、rest） | `cleanup_aborted.py` |
-| **变长** | 各 run 本来就不等长（自定步调、按键结束、每 run 对应素材的一段） | `postprocess_runs.py` |
-
-⚠️ **变长范式上 `cleanup_aborted.py` 会删错数据。** 它按「同 task 众数」推期望值。
-实测 HS7T/coco：7 个 run 的设计长度是 `464/470/419/467/479/427/216`，众数推出 470，
-于是 216 vol 的 **run-07 被判成 aborted**——按 `--auto` 跑会删掉 4 个已入库被试的完好数据。
-脚本现在会在 run 长度分布过宽时明确警告，但**判断范式类型是你的责任**。
-
-`cleanup_aborted.py` 还有一个历史坑：它原来只 glob `sub-*/ses-*/func/`，
-**无 session 布局的数据集会扫到 0 个文件然后报告「未发现 aborted run」**
-——什么都没看却报告一切正常。现已同时支持两种布局，且扫不到文件时直接报错。
+### [8] 元数据
 
 ```bash
-# 交互模式：展示异常 run，确认后删除并重编号
-python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids"
-
-# 自动模式：自动删除 1-vol run
-python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids" --auto
-
-# 干跑模式：只报告不执行
-python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids" --dry-run
-
-# 非交互 agent / CI：输出 JSON，并在发现 aborted run 时返回 1
-python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids" \
-  --dry-run --json --fail-if-found
-
-# 非交互确认执行删除
-python3 "$SKILL_DIR/scripts/cleanup_aborted.py" "$PROJECT_DIR/bids" --yes
+python3 "$SKILL_DIR/scripts/init_metadata.py" "$PROJECT_DIR"
 ```
 
-变长范式走这个（期望值**必须来自扫描协议表，不要从数据里推**）：
+- `dataset_description.json`：不存在才写（`--force-description` 覆盖）。Authors/License 只在 project.json 填了才写；
+  **Authors 要问用户**，不要编。
+- `participants.tsv`：每次按 mapping 重建；`participants_demographics: true` 时从 scout 结果补 age/sex。
+- `README`、`.bidsignore`（含 `tmp_dcm2bids/`）：不存在才建。README 的采集参数、被试说明、已知问题要人写。
+
+### [9] 辅助数据
+
+行为数据等：mapping 加一列（如 `beh_dir`），然后
 
 ```bash
-# dry-run，逐 run 与协议表严格比对
-python3 "$SKILL_DIR/scripts/postprocess_runs.py" "$PROJECT_DIR/bids/sub-06" \
-    --task coco --expected 464,470,419,467,479,427,216
-
-# 确认无误后执行：剔废 run + 重编号 + 把 fmap IntendedFor 收敛成 1:1
-python3 "$SKILL_DIR/scripts/postprocess_runs.py" "$PROJECT_DIR/bids/sub-06" \
-    --task coco --expected 464,470,419,467,479,427,216 --apply
+python3 "$SKILL_DIR/scripts/copy_sourcedata.py" "$PROJECT_DIR" --column beh_dir --kind beh
 ```
 
-对不上协议表就整体停下、不动任何文件——宁可不做，也不能删错。
-
-#### 7a2. fmap 的 IntendedFor 必须收敛成 1:1
-
-**dcm2bids 的 `"IntendedFor": ["bold"]` 是累积的**：fmap run-01 指向 1 个 bold、
-run-02 指向 2 个、……run-07 指向 8 个。这几乎肯定不是你要的——每 run 一个
-reverse-PE 时，应当是 fmap run-N ↔ func run-N 的 1:1。
-
-实测 HS7T 四个已入库被试全是人工改成 1:1 的，此前没有工具。
-`postprocess_runs.py` 顺带做掉了，风格跟随数据集现状：
-
-- `--intendedfor-style relative`（默认）→ `func/sub-XX_task-YY_run-NN_bold.nii.gz`
-- `--intendedfor-style uri` → `bids::sub-XX/func/...`（dcm2bids 3.2 新版默认产出这种）
-
-**同一数据集里两种风格混用会很难查**，加被试时先看已有被试用的哪种。
-
-#### 7b. 重复结构像
-
-如果 anat 数超过期望值，通常是同 session 扫了两次 MP2RAGE。根据用户决策保留 first/last/all。
-
-#### 7c. 多余 fmap
-
-如果 fmap 比 func 多（可能对应已删除的 aborted func run），根据用户决策删除。
-
-### [8] 辅助数据
-
-```bash
-# 复制 physio（需要 mapping 中有 physio_subfolder 或 physio_folder 列）
-bash "$SKILL_DIR/scripts/copy_auxiliary.sh" "$PROJECT_DIR" --type physio
-
-# 复制行为数据
-bash "$SKILL_DIR/scripts/copy_auxiliary.sh" "$PROJECT_DIR" --type beh
-```
-
-**注意**：physio 可能在 DICOM 文件夹内的子目录，也可能在顶层同名目录。命名大小写不可预测，必须 `ls` 确认。
+路径和大小写不可预测，先 `ls` 确认再写进 mapping。
 
 #### Siemens CMRR 生理记录
 
-CMRR 序列的 `Physio recording` 有 **File** 和 **DICOM** 两种输出模式，
-**同一项目内可能混用**，必须分别识别。先判断每个 session 属于哪种：
+由 convert.py 在 finalize 之后自动处理（mapping 的 `physio_mode`）；单独跑：
+`<pyt-python> "$SKILL_DIR/scripts/physio_to_bids.py" "$PROJECT_DIR" [--only …] [--dry-run]`。
+
+| 模式 | 识别 | 处理 |
+|---|---|---|
+| `dicom` | scout 的 PhysioLog 计数 > 0（`ImageType` 含 PHYSIO，单帧 1–19 MB） | 从 CSA Data `(7fe1,1010)` 提取 log 到 `bids/sourcedata/physio/<sub>/<SN>_<SD>/`（需 pydicom） |
+| `file` | 扫描仪单独导出的 `Physio_*_{Info,PULS,RESP}.log` | 拷到 `bids/sourcedata/physio/<sub>/` |
+
+两种模式之后一样：**按采集时间配对**——Info.log 第一个 volume 的 `ACQ_START_TICS × 2.5 ms` 与 bold 的
+AcquisitionTime 相差 < 1 ms（实测），所以不依赖序列名、run 号、NumVolumes，等长范式和重编号后都不会配错。
+NumVolumes 只做交叉核对（不等说明 run 被中断）。产物 `_recording-pulse_physio`（200 Hz）与
+`_recording-respiratory_physio`（50 Hz）两套（采样率不同，BIDS 不允许放一个 tsv，不重采样）。
+fmap 的 3-volume 组和测试序列的 log 报为「未配对」，正常。
+
+**StartTime** = physio 首个采样相对第一帧的时间，同协议下应基本相同（HS7T 1.2mm/124 层：−50.24 s）。
+个别 run 明显偏离时先怀疑 log 配错（pitfalls #43），再考虑序列启动后停顿；NumVolumes 与 bold 帧数不等会单独报警。
+
+dcm2niix 对 DICOM 模式 PhysioLog 的处理随版本变（pitfalls #25）：v1.0.20250505 无产物也无警告；
+v1.0.20260724 会产出 `*_physio.tsv.gz` 但 dcm2bids 不配对、只留在 tmp。上面的提取在两种版本下都可靠。
+
+### [10] Events.tsv
+
+需要：侦察结果有 task 语义的序列，或用户提到要建模。Resting state 和纯电影观看（连续刺激、按需另做标注）
+通常不需要；不确定就问。
 
 ```bash
-# 有独立 .log 文件 → File 模式
-ls <session>_physio/*.log 2>/dev/null
-
-# DICOM 目录里有 *_PhysioLog series（ImageType 含 RAWDATA\PHYSIO）→ DICOM 模式
-# 特征：单帧、1–19 MB、每个 series 只有 1 个文件
-```
-
-⚠️ **dcm2niix 对 DICOM 模式的 PhysioLog 的处理随版本变**（pitfalls #25）：v1.0.20250505
-无产物也无警告，只看 dcm2niix 输出会误判成"这个 session 没采生理数据"；v1.0.20260724
-会直接产出 `*_recording-{cardiac,respiratory}_physio.tsv.gz`，但 dcm2bids 不配对、只留在 tmp。
-先 `dcm2niix -v` 看版本；下面的提取脚本两种版本下都可靠。
-
-```bash
-# DICOM 模式：先提取出 .log（按 SeriesDescription 分子目录）
-python3 "$SKILL_DIR/scripts/extract_cmrr_physio_dicom.py" \
-    <dicom_dir> "$PROJECT_DIR/sourcedata/physio/sub-XX"
-
-# File 模式：原样复制
-cp <physio_dir>/*.log "$PROJECT_DIR/sourcedata/physio/sub-XX/"
-
-# 两种模式共用同一个转换脚本
-python3 "$SKILL_DIR/scripts/cmrr_physio2bids.py" \
-    "$PROJECT_DIR/sourcedata/physio/sub-XX" "$PROJECT_DIR/bids/sub-XX/func" \
-    --prefix sub-XX_task-<task> \
-    --map 469:01,470:02,382:03 \
-    [--recursive]        # DICOM 模式提取出来分了子目录时加
-```
-
-`--map` 是 `NumVolumes:run` 映射（从各 bold 的 volume 数得到）。产物是
-`_recording-pulse_physio` 和 `_recording-respiratory_physio` 两套
-——PULS/RESP 采样率不同，BIDS 不允许放进同一个 tsv（pitfalls #27）。
-
-**在 `participants_mapping.tsv` 里加一列 `physio_mode`**（`file` / `dicom` / `none`）
-记录每个 session 走的哪条路径，否则后续无从追溯。
-
-**校验**：同一协议下所有 run 的 `StartTime` 应当高度一致；若差异很大，
-说明 physio 与 run 配对错了。详见 `references/pitfalls.md` #25–#28。
-
-### [9] Events.tsv 生成
-
-满足以下任一条件则需要生成 events.tsv：
-- 侦察结果中有含 `task-` 语义的序列
-- 用户明确提到有任务态 fMRI 需要建模
-
-Resting state 不需要。不确定时询问用户。
-
-```bash
-# 1. 复制模板到项目
 cp "$SKILL_DIR/scripts/generate_events_template.py" "$PROJECT_DIR/code/generate_events.py"
-
-# 2. 编辑 TASK_DESIGNS 部分，填入项目实际范式
-
-# 3. 运行（可先 dry-run 检查）
+# 编辑 TASK_DESIGNS
 python3 "$PROJECT_DIR/code/generate_events.py" "$PROJECT_DIR/bids" --dry-run
 python3 "$PROJECT_DIR/code/generate_events.py" "$PROJECT_DIR/bids"
-
-# 4. 可选：校验扫描时长 vs 范式时长
 python3 "$PROJECT_DIR/code/generate_events.py" "$PROJECT_DIR/bids" --verify
 ```
 
-**时间校验**：`n_TRs x TR` 应 >= 刺激总时长。差值 = dummy TRs + baseline。不确定时问用户。
+`n_TRs × TR` 应 ≥ 刺激总时长，差值 = dummy TRs + baseline。block 间注视点期 trial_type 叫 `baseline`。
 
-block 间注视点期 → trial_type 命名为 `baseline`，不要叫 `fixation`。
+### [11] BIDS 合规
 
-### [10] 记录
-
-填写 `<project>/code/decision_log.md`，记录所有人工判断的"为什么"。模板分 5 段：被试与 Session、序列识别、异常数据处理、刺激范式、迁移经验。
-
-### [11] BIDS 合规验证
-
-所有后处理和 events 生成完成后，跑官方 validator 确认符合 BIDS spec。这是上传 OpenNeuro 前的最后一道门。
+**每次转换后都跑**，不只是上传前——9 月起 HS7T 三个数据集的 TaskName 缺失就是因为一直没跑 validator 才没发现。
 
 ```bash
-# 推荐：npx（无需全局安装）
 npx bids-validator "$PROJECT_DIR/bids" --ignoreNiftiHeaders
-
-# 离线备选：全局安装后调用
-npm install -g bids-validator
-bids-validator "$PROJECT_DIR/bids" --ignoreNiftiHeaders
 ```
 
-**调用注意**：`bids-validator` 通常不在 `$PATH`，直接调用会报 `command not found`，优先用 `npx`。
+- 裸命令 `bids-validator` 通常不在 PATH，用 npx。
+- 服务器没有 node（CentOS 7 / glibc 2.17 也装不了新版）时，在能挂载数据集的机器上跑（例如 Mac 上 sshfs 挂载后
+  `npx -y bids-validator@1.15.0 <挂载路径>/bids --ignoreNiftiHeaders`；`--ignoreNiftiHeaders` 让它只读 json 和文件名，网络挂载也够快）。
+- ERROR 必修；WARNING 酌情（OpenNeuro 允许带 warning）。常见报错见 pitfalls #13–#24。
 
-**ERROR 必须修复；WARNING 酌情处理（OpenNeuro 允许带 warning 上传，但建议尽量清除）。**
-
-常见报错及解法见 `references/pitfalls.md` #13–#23。
-
-## 附：脚本与文件一览
+## 附：脚本一览
 
 ```
-bids-convert/
-  SKILL.md
-  scripts/
-    scout.sh                             ← 侦察：跑 helper + 收集变体
-    lint_config.py                       ← 转换前查 config 里会被 dcm2bids 静默忽略的写法（--fix 自动改）
-    convert_parallel.sh                  ← 并行转换（含安全重跑逻辑；转换前自动跑 lint_config）
-    validate.py                          ← 文件数 + volume 检查 + tmp 未匹配 + fmap IntendedFor
-    cleanup_aborted.py                   ← 检测 aborted run + 删除 + 重编号（**等长范式**，众数推断）
-    postprocess_runs.py                  ← 按协议表剔废 run + 重编号 + 收敛 IntendedFor
-                                           （**变长范式必须用这个**，见 7a）
-    generate_events_template.py          ← events 生成框架（项目特定参数外部传入）
-    copy_auxiliary.sh                    ← physio/behavior 复制到 sourcedata
-    extract_cmrr_physio_dicom.py         ← 从 PhysioLog DICOM 的 CSA Data 提取内嵌 log
-    cmrr_physio2bids.py                  ← CMRR log → BIDS _physio.tsv.gz + .json
-  templates/
-    project_config.yaml                  ← 项目配置模板 (v1.4)
-    dcm2bids_config_mp2rage.json         ← MP2RAGE 通用 config 片段（按需选取）
-    decision_log.md                      ← 决策记录模板
-  references/
-    schema_notes.md                      ← project_config.yaml 字段说明
-    pitfalls.md                          ← 已知陷阱与解法（29 条）
-    mp2rage_cheatsheet.md                ← MP2RAGE 11 种输出速查
-    project_diffs.md                     ← 4 项目差异对照表
-    workflow.md                          ← 本文件：各步骤详细规范
-  examples/
-    ODLoc/                               ← 最简单：单 session、单 task
-    MonoDep/                             ← 最复杂：多变体、多 task、events
-    smoke-demo/                          ← 合成数据验证示例
+scripts/
+  bids_common.py        公共：项目声明读取、BIDS 文件名、sidecar、NIfTI 头（库，不直接运行）
+  scout.py              侦察（需 pydicom）
+  lint_config.py        config 静态检查（--fix）
+  preview.py            预演匹配 + finalize 计划（不转影像）
+  convert.py            并行转换：dcm2niix 缓存 → dcm2bids → finalize → physio
+  finalize.py           按声明收拾一个 session（convert 自动调用；也可单独 dry-run / --apply）
+  physio_to_bids.py     CMRR 生理记录（DICOM 模式需 pydicom）
+  validate.py           转换后核对
+  init_metadata.py      dataset_description / participants / README / .bidsignore
+  copy_sourcedata.py    行为数据等拷进 sourcedata
+  generate_events_template.py  events.tsv 生成框架
+  create_synthetic_bids_demo.py  合成演示数据
+templates/
+  project.json  protocol.tsv  decisions.tsv  dcm2bids_config.json  dcm2bids_config_mp2rage.json  decision_log.md
 ```

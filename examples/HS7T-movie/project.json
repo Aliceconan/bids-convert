@@ -1,0 +1,15 @@
+{
+  "_comment": "HS7T 电影 fMRI · coco 数据集的项目声明（示例；路径为实验室服务器）",
+  "name": "HS7T Movie fMRI - Coco",
+  "raw_root": "/data100/dataset/Rawdata/Huairou7T",
+  "dcm2bids": "/localdata/software/anaconda3/envs/pyt/bin/dcm2bids",
+  "dcm2niix": "/localdata/software/dcm2niix/build/bin/dcm2niix",
+  "jobs": 4,
+  "fmap_pairing": "after",
+  "anat_duplicates": "ask",
+  "unmatched_func": "discard",
+  "unpaired_fmap": "ask",
+  "authors": [],
+  "license": "",
+  "participants_demographics": true
+}

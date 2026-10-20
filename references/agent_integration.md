@@ -56,23 +56,25 @@ skill:
       subjects: int
       sessions: int
       total_files: int
-      aborted_runs_cleaned: int
+      sessions_needing_decision: int
 ```
 
 ## 状态机模型（非对话式 agent）
 
 ```
-INIT → SCOUT → WAIT_USER_CONFIG → GENERATE_CONFIG → CONVERT →
-VALIDATE → POST_PROCESS → WAIT_USER_REVIEW → AUXILIARY →
-EVENTS → RECORD → DONE
+INIT → SCOUT → WAIT_USER_CONFIG → WRITE_DECLARATIONS → PREVIEW ⇄ WAIT_USER_DECISIONS →
+CONVERT (⇄ WAIT_USER_DECISIONS on needs_decision) → VALIDATE → METADATA →
+AUXILIARY → EVENTS → BIDS_VALIDATOR → RECORD → DONE
 ```
 
-`WAIT_USER_*` 状态需要外部输入，其余可自动执行。
+`WAIT_USER_*` 状态需要外部输入，其余可自动执行。PREVIEW/CONVERT 返回待决事项时，把事项原样交给用户，
+用户的决定写进 `code/decisions.tsv`（每行带 reason），再回到 PREVIEW/CONVERT——不要替用户猜。
 
 ## 自动化友好接口
 
 关键脚本支持结构化输出和明确退出码，便于在 CI 或非交互 agent 中消费：
 
 - `validate.py --json --fail-on-anomaly` — 输出 JSON，异常时退出 1
-- `cleanup_aborted.py --dry-run --json --fail-if-found` — 发现 aborted run 时退出 1
-- `cleanup_aborted.py --yes` — 非交互确认执行删除
+- `preview.py` / `finalize.py` — 有待决事项时退出 2，不改任何文件
+- `convert.py` — 退出 0/2/1（完成/有待决/有失败），明细写 `code/logs/convert_<时间>.json`
+- `lint_config.py --json` — config 静态检查

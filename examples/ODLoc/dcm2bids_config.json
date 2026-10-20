@@ -1,4 +1,6 @@
 {
+  "bids_uri": "URI",
+  "case_sensitive": false,
   "descriptions": [
     {
       "id": "mp2rage_inv1_nd",
@@ -16,7 +18,13 @@
       "custom_entities": "inv-1_rec-DIS2D",
       "criteria": {
         "SeriesDescription": "*INV1",
-        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+        "ImageType": [
+          "ORIGINAL",
+          "PRIMARY",
+          "M",
+          "DIS2D",
+          "MAGNITUDE"
+        ]
       }
     },
     {
@@ -35,7 +43,13 @@
       "custom_entities": "inv-2_rec-DIS2D",
       "criteria": {
         "SeriesDescription": "*INV2",
-        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+        "ImageType": [
+          "ORIGINAL",
+          "PRIMARY",
+          "M",
+          "DIS2D",
+          "MAGNITUDE"
+        ]
       }
     },
     {
@@ -70,10 +84,18 @@
       "custom_entities": "dir-AP",
       "criteria": {
         "SeriesDescription": {
-          "any": ["REVERSE", "reverse", "*_reverse"]
+          "any": [
+            "REVERSE",
+            "reverse",
+            "*_reverse"
+          ]
         }
       },
-      "sidecar_changes": {"IntendedFor": ["bold_odloc"]}
+      "sidecar_changes": {
+        "IntendedFor": [
+          "bold_odloc"
+        ]
+      }
     },
     {
       "id": "bold_odloc",
@@ -82,9 +104,16 @@
       "custom_entities": "task-ODloc",
       "criteria": {
         "SeriesDescription": {
-          "any": ["ODloc*", "mb_*", "run"]
+          "any": [
+            "ODloc*",
+            "mb_*",
+            "run"
+          ]
         },
         "PhaseEncodingDirection": "j-"
+      },
+      "sidecar_changes": {
+        "TaskName": "ODloc"
       }
     }
   ]

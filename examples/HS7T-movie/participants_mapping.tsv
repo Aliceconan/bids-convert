@@ -1,0 +1,8 @@
+participant_id	dicom_dir	physio_mode
+sub-01	20260612_HS69_COCO_S01	none
+sub-02	20260901_HS69_COCO_S02	none
+sub-04	20260907_HS69_COCO_S04	none
+sub-05	20260908_HS69_COCO_S05	none
+sub-06	20260923_HS69_COCO_S06	dicom
+sub-07	20260928_HS69_COCO_S07	dicom
+sub-08	20261016_HS69_COCO_S08	dicom

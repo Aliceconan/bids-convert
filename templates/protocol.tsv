@@ -1,0 +1,2 @@
+task	run	volumes	tolerance
+# 每个 task 每个 run 一行；volumes 来自扫描协议表（不要从数据里推）；tolerance 允许的帧数偏差

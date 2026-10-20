@@ -1,4 +1,6 @@
 {
+  "bids_uri": "URI",
+  "case_sensitive": false,
   "descriptions": [
     {
       "id": "mp2rage_inv1_nd",
@@ -16,7 +18,13 @@
       "custom_entities": "inv-1_rec-DIS2D",
       "criteria": {
         "SeriesDescription": "*INV1",
-        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+        "ImageType": [
+          "ORIGINAL",
+          "PRIMARY",
+          "M",
+          "DIS2D",
+          "MAGNITUDE"
+        ]
       }
     },
     {
@@ -35,7 +43,13 @@
       "custom_entities": "inv-2_rec-DIS2D",
       "criteria": {
         "SeriesDescription": "*INV2",
-        "ImageType": ["ORIGINAL", "PRIMARY", "M", "DIS2D", "MAGNITUDE"]
+        "ImageType": [
+          "ORIGINAL",
+          "PRIMARY",
+          "M",
+          "DIS2D",
+          "MAGNITUDE"
+        ]
       }
     },
     {
@@ -70,11 +84,20 @@
       "custom_entities": "dir-PA",
       "criteria": {
         "SeriesDescription": {
-          "any": ["*REVERSE", "mb_*"]
+          "any": [
+            "*REVERSE",
+            "mb_*"
+          ]
         },
         "PhaseEncodingDirection": "j"
       },
-      "sidecar_changes": {"IntendedFor": ["bold_eyedep", "bold_loc", "bold_rest"]}
+      "sidecar_changes": {
+        "IntendedFor": [
+          "bold_eyedep",
+          "bold_loc",
+          "bold_rest"
+        ]
+      }
     },
     {
       "id": "bold_eyedep",
@@ -83,9 +106,15 @@
       "custom_entities": "task-eyedep",
       "criteria": {
         "SeriesDescription": {
-          "any": ["*_MAIN", "task*"]
+          "any": [
+            "*_MAIN",
+            "task*"
+          ]
         },
         "PhaseEncodingDirection": "j-"
+      },
+      "sidecar_changes": {
+        "TaskName": "eyedep"
       }
     },
     {
@@ -95,9 +124,17 @@
       "custom_entities": "task-loc",
       "criteria": {
         "SeriesDescription": {
-          "any": ["*_LOC", "LOC", "loc*", "*_Localizer"]
+          "any": [
+            "*_LOC",
+            "LOC",
+            "loc*",
+            "*_Localizer"
+          ]
         },
         "PhaseEncodingDirection": "j-"
+      },
+      "sidecar_changes": {
+        "TaskName": "loc"
       }
     },
     {
@@ -107,9 +144,16 @@
       "custom_entities": "task-rest",
       "criteria": {
         "SeriesDescription": {
-          "any": ["*_REST", "RESTING", "rest"]
+          "any": [
+            "*_REST",
+            "RESTING",
+            "rest"
+          ]
         },
         "PhaseEncodingDirection": "j-"
+      },
+      "sidecar_changes": {
+        "TaskName": "rest"
       }
     }
   ]

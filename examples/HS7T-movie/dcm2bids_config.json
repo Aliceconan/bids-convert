@@ -1,0 +1,30 @@
+{
+  "case_sensitive": false,
+  "bids_uri": "URI",
+  "descriptions": [
+    {"id": "mp2rage_inv1", "datatype": "anat", "suffix": "MP2RAGE", "custom_entities": "inv-1",
+     "criteria": {"SeriesDescription": "*mp2rage*INV1"}},
+    {"id": "mp2rage_inv2", "datatype": "anat", "suffix": "MP2RAGE", "custom_entities": "inv-2",
+     "criteria": {"SeriesDescription": "*mp2rage*INV2"}},
+    {"id": "mp2rage_uni", "datatype": "anat", "suffix": "UNIT1",
+     "criteria": {"SeriesDescription": "*mp2rage*UNI_Images"}},
+    {"id": "bold", "datatype": "func", "suffix": "bold", "custom_entities": "task-coco",
+     "criteria": {"SeriesDescription": {"any": ["coco_run_0[0-9]", "coco_run_0[0-9]_rescan",
+                                                "*_coco_run[0-9]", "*_coco_run[0-9]_[0-9]"]}},
+     "sidecar_changes": {"TaskName": "coco"}},
+    {"id": "sbref", "datatype": "func", "suffix": "sbref", "custom_entities": "task-coco",
+     "criteria": {"SeriesDescription": {"any": ["coco_run_0[0-9]_SBRef", "coco_run_0[0-9]_rescan_SBRef",
+                                                "*_coco_run[0-9]_SBRef", "*_coco_run[0-9]_[0-9]_SBRef"]}},
+     "sidecar_changes": {"TaskName": "coco"}},
+    {"id": "fmap_pa", "datatype": "fmap", "suffix": "epi", "custom_entities": "dir-PA",
+     "criteria": {"SeriesDescription": {"any": ["reverse_PE_0[0-9]", "reverse_PE_0[0-9]_rescan",
+                                                "*_coco_reverse[0-9]", "*_coco_revers[0-9]"]},
+                  "PhaseEncodingDirection": "j", "SliceThickness": {"btwe": [1.1, 1.3]}},
+     "sidecar_changes": {"IntendedFor": ["bold"]}},
+    {"id": "fmap_ap", "datatype": "fmap", "suffix": "epi", "custom_entities": "dir-AP",
+     "criteria": {"SeriesDescription": {"any": ["reverse_PE_0[0-9]", "reverse_PE_0[0-9]_rescan",
+                                                "*_coco_reverse[0-9]", "*_coco_revers[0-9]"]},
+                  "PhaseEncodingDirection": "j-", "SliceThickness": {"btwe": [1.1, 1.3]}},
+     "sidecar_changes": {"IntendedFor": ["bold"]}}
+  ]
+}

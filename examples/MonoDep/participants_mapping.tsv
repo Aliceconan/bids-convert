@@ -1,4 +1,4 @@
-participant_id	session	dicom_folder
+participant_id	session	dicom_dir
 sub-01	ses-pre	20210301_S18_TASK_S01_PRE
 sub-01	ses-post	20210401_S18_TASK_S01_POST
 sub-02	ses-pre	20210305_S18_TASK_S02_PRE

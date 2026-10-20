@@ -1,155 +1,113 @@
 # DICOM-to-BIDS Conversion Skill
 
-> An end-to-end workflow distilled from four completed projects:
-> ODLoc, EYEDEP_CRF, MP_CRF, and MonoDep.
-> The goal is to make MRI DICOM-to-BIDS conversion usable by general AI agents, not only by human operators.
+> End-to-end workflow distilled from four completed projects (ODLoc / EYEDEP_CRF / MP_CRF / MonoDep)
+> and the HS7T movie-fMRI project (2026). Any AI agent that can run shell commands, read/write files,
+> and pause for user decisions can execute it.
 
-Chinese documentation lives in [README.md](README.md).
+中文版: [README.md](README.md)
 
-This repository is an agent-oriented MRI DICOM-to-BIDS workflow/skill package, not just a single script bundle. It includes:
+An agent-oriented MRI DICOM-to-BIDS workflow package, not a single script:
 
-- a skill entrypoint: `SKILL.md`
-- an optional Codex metadata example: `agents/openai.yaml`
-- reusable shell and Python scripts
-- templates, references, and sanitized examples
+- skill entrypoint: `SKILL.md` (single source of truth for the full workflow)
+- Python CLI scripts (standard library only, Python 3.6 compatible; scouting and DICOM-embedded physio also need pydicom)
+- project-declaration templates, references, and examples abstracted from real projects
+- optional agent-platform metadata example: `agents/openai.yaml`
 
-You do not need Codex to use this repository. The core workflow is driven by standard CLI scripts and documentation. Any agent that can execute shell commands, read/write files, parse basic JSON, and pause for a few user decisions can integrate with it.
-
-## What It Covers
-
-- scouting `SeriesDescription` variants before writing `dcm2bids_config.json`
-- generating `participants_mapping.tsv`
-- parallel conversion with `dcm2bids`
-- validating file counts, functional run volumes, and unmatched tmp outputs
-- cleaning aborted runs
-- copying physio or behavior files into `sourcedata`
-- converting Siemens CMRR physiological logs into BIDS `_physio.tsv.gz` (both File-mode `.log` files and DICOM-mode `PhysioLog` series, which `dcm2niix` silently skips)
-- scaffolding `events.tsv` generation for task fMRI
-
-## Expansion Areas
-
-The current strongest path is Siemens-style fMRI data, while the following areas are explicit extension targets:
-
-- Philips and GE vendor-specific conversion patterns
-- mature templates for DWI, ASL, and multi-echo GRE
-- higher-automation flows with fewer required user decisions
+**Core design**: every human decision lives in declaration files (`project.json` / `protocol.tsv` /
+`decisions.tsv` / dcm2bids config), so one command reproduces the same BIDS from DICOM. Each session can be
+previewed with the real dcm2bids before converting any image. Whenever something cannot be decided
+automatically, the scripts stop without touching any file and list what a human must decide.
 
 ## Quick Start
-
-1. Check dependencies:
-
-```bash
-dcm2bids --version
-dcm2niix -h
-python3 --version
-```
-
-2. Create a project workspace:
 
 ```bash
 SKILL_DIR="<path-to-this-repo>"
 PROJECT_DIR="<project-root>"
+PY_DCM="<python of the env where dcm2bids + pydicom are installed>"
 
-mkdir -p "$PROJECT_DIR/code" "$PROJECT_DIR/bids"
-cp "$SKILL_DIR/templates/project_config.yaml" "$PROJECT_DIR/code/project_config.yaml"
-cp "$SKILL_DIR/templates/decision_log.md" "$PROJECT_DIR/code/decision_log.md"
+# 1. init: copy templates, write participants_mapping.tsv (participant_id, [session], dicom_dir, [physio_mode])
+mkdir -p "$PROJECT_DIR/code"
+cp "$SKILL_DIR"/templates/{project.json,protocol.tsv,decisions.tsv,dcm2bids_config.json,decision_log.md} "$PROJECT_DIR/code/"
+
+# 2. scout: one row per series + cross-session summary (naming variants, volume counts)
+$PY_DCM "$SKILL_DIR/scripts/scout.py" "$PROJECT_DIR"
+
+# 3. write config / protocol / project.json, then lint
+python3 "$SKILL_DIR/scripts/lint_config.py" "$PROJECT_DIR/code/dcm2bids_config.json" --fix
+
+# 4. preview (no image conversion): what each series becomes, which sessions need a decision
+python3 "$SKILL_DIR/scripts/preview.py" "$PROJECT_DIR"
+
+# 5. convert: dcm2niix cache -> dcm2bids -> finalize (run numbers / discards / fmap pairing / TaskName) -> physio
+$PY_DCM "$SKILL_DIR/scripts/convert.py" "$PROJECT_DIR"
+
+# 6. checks, dataset metadata, BIDS compliance
+python3 "$SKILL_DIR/scripts/validate.py" --project "$PROJECT_DIR" --json --fail-on-anomaly
+python3 "$SKILL_DIR/scripts/init_metadata.py" "$PROJECT_DIR"
+npx bids-validator "$PROJECT_DIR/bids" --ignoreNiftiHeaders
 ```
 
-3. Scout representative sessions before writing config:
-
-```bash
-bash "$SKILL_DIR/scripts/scout.sh" <dicom_session_folder> /tmp/scout_example
-```
-
-4. Run conversion after preparing `dcm2bids_config.json` and `participants_mapping.tsv`:
-
-```bash
-bash "$SKILL_DIR/scripts/convert_parallel.sh" "$PROJECT_DIR"
-```
-
-5. Validate outputs:
-
-```bash
-python3 "$SKILL_DIR/scripts/validate.py" "$PROJECT_DIR/bids" \
-  --expected-anat 7 --expected-func 7 --expected-fmap 7 \
-  --json --fail-on-anomaly
-```
-
-## Recommended Environment
+## Dependencies
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| `dcm2bids` | >= 3.2.0 | DICOM to BIDS conversion |
-| `dcm2niix` | >= v1.0.20211006 | DICOM to NIfTI |
-| `python3` | >= 3.8 | Validation and post-processing scripts |
-| `bash` / `zsh` | — | Parallel shell execution |
+| `dcm2bids` | 3.2.x (Python ≥3.7 is fine) | series matching and naming |
+| `dcm2niix` | ≥ v1.0.20211006 | DICOM → NIfTI |
+| `python3` | ≥ 3.6 | all scripts (standard library only) |
+| `pydicom` | 2.x | `scout.py`, DICOM-mode physio (use the dcm2bids environment) |
+| `npx bids-validator` | — | final compliance check (run it on a machine that mounts the data if the server has no node) |
 
-## Agent Compatibility
-
-Best fit:
-
-- shell execution
-- file read/write
-- basic JSON parsing
-- limited interactive user confirmation
-- tolerance for longer-running batch jobs
-
-Helpful integration features:
-
-- support for non-zero exit codes
-- support for JSON stdout from validation scripts
-- ability to pause on user decision points
+`dcm2bids --skip_dcm2niix` is not needed (it requires Python ≥3.8); `convert.py` manages its own dcm2niix cache.
 
 ## Safety And Privacy
 
-- Do not put direct identifiers into `participants_mapping.tsv`.
-- Keep examples de-identified.
-- Use `cleanup_aborted.py --dry-run --json` before destructive cleanup in automation.
-- When rerunning a session after config changes, remove the old BIDS output for that session first.
+- The mapping and decisions files never contain names, original IDs or birth dates; whether `participants.tsv` gets age/sex is the user's call.
+- Never commit real DICOM or identifiable information; examples contain only series names and anonymous IDs.
+- Discarded files are moved to `work/discarded/` with a reason, never deleted; `finalize.py` is dry-run by default.
+- Re-running `convert.py` for a session after changing the config or decisions is safe (it re-matches from the cache every time: no leftovers, no data loss).
 
-## Automation-Friendly Interfaces
+## Validation And Automation
 
-- `validate.py --json --fail-on-anomaly`
-- `cleanup_aborted.py --dry-run --json --fail-if-found`
-- `cleanup_aborted.py --yes` for non-interactive confirmation
+- `convert.py`: exit 0 all done / 2 some sessions need a human decision / 1 failures; details in `code/logs/convert_<time>.json`
+- `preview.py`, `finalize.py`: exit 2 when decisions are pending, without changing any file
+- `validate.py --json --fail-on-anomaly`, `lint_config.py --json`
 
-## Minimal Public Demo
+Tests (Python 3.6+, no real images needed):
 
-This repo includes a synthetic smoke demo with no real MRI data:
+```bash
+python3 -m unittest discover -s tests
+```
+
+## Minimal Demo
 
 ```bash
 python3 scripts/create_synthetic_bids_demo.py /tmp/bids-convert-demo --with-aborted
 python3 scripts/validate.py /tmp/bids-convert-demo --json
-python3 scripts/cleanup_aborted.py /tmp/bids-convert-demo --dry-run --json --fail-if-found
 ```
 
-See `examples/smoke-demo/README.md` for details.
-
-## Expansion Roadmap
-
-The current strongest path comes from Siemens-style fMRI projects, but that is a starting point rather than a hard boundary. The long-term direction is to keep one stable workflow skeleton and progressively extend it to Philips, GE, and additional MRI sequence families instead of duplicating separate end-to-end pipelines.
-
-See `references/extension_roadmap.md` for the detailed roadmap.
+See `examples/smoke-demo/README.md`.
 
 ## Repository Layout
 
 ```text
 bids-convert/
-  SKILL.md
-  README.md
-  README_EN.md
-  agents/
-    openai.yaml
-  scripts/
-  templates/
-  references/
-  examples/
-    smoke-demo/
+  SKILL.md        full workflow (single source of truth)
+  scripts/        scout / lint_config / preview / convert / finalize / physio_to_bids /
+                  validate / init_metadata / copy_sourcedata / generate_events_template / bids_common
+  templates/      project.json  protocol.tsv  decisions.tsv  dcm2bids_config*.json  decision_log.md
+  references/     project_spec  workflow  pitfalls  mp2rage_cheatsheet  project_diffs  agent_integration  extension_roadmap
+  examples/       HS7T-movie (complete declaration set)  ODLoc  MonoDep  smoke-demo
   tests/
 ```
 
-## Notes For Release
+References are written in Chinese; `references/project_spec.md` documents the declaration formats and
+fieldmap-pairing rules, `references/pitfalls.md` lists 44 known pitfalls (silent dcm2bids behaviours,
+Siemens/CMRR specifics, bids-validator errors).
 
-- Current public version: `v1.0.0`
-- Release notes: [RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md)
-- License: [MIT](LICENSE)
+## Version History
+
+| Version | Date | Changes |
+|------|------|------|
+| v1.0 | 2026-04-09 | initial release, four projects |
+| v1.1 | 2026-09-15 | Siemens CMRR physio support |
+| v2.0 | 2026-10-19 | declarative rewrite: project.json / protocol.tsv / decisions.tsv; header-only scout, real-dcm2bids preview, cached conversion (fixes the old `--rerun` that silently produced nothing), finalize (run = protocol position, time-based fmap pairing, TaskName, recoverable discards), time-based physio pairing; config must declare `case_sensitive` / `bids_uri` / `TaskName`; Python 3.6 compatible. See RELEASE_NOTES_v2.0.0.md |

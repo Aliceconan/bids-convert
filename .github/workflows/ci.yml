@@ -17,18 +17,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check shell syntax
-        run: |
-          bash -n scripts/scout.sh
-          bash -n scripts/convert_parallel.sh
-          bash -n scripts/copy_auxiliary.sh
-
       - name: Check Python syntax
-        run: |
-          PYTHONPYCACHEPREFIX=/tmp/codex-pyc python -m py_compile \
-            scripts/validate.py \
-            scripts/cleanup_aborted.py \
-            scripts/generate_events_template.py
+        run: PYTHONPYCACHEPREFIX=/tmp/codex-pyc python -m py_compile scripts/*.py
 
-      - name: Run smoke tests
-        run: python -m unittest tests/test_validate_and_cleanup.py
+      - name: Lint example configs
+        run: |
+          for f in templates/dcm2bids_config.json examples/*/dcm2bids_config.json; do
+            python scripts/lint_config.py "$f"
+          done
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
